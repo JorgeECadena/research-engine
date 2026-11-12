@@ -92,7 +92,7 @@ data contract says.
 
 ## Consequences
 
-- `openqasm3` is a development dependency only. Every golden program and a seeded set of
+- `openqasm3[parser]` is a development dependency only. Every golden program and a seeded set of
   generated programs are parsed in `tests/contract/test_qasm_contracts.py`; the package itself
   does not depend on the parser.
 - The export is read-only with respect to the store. Cached results do not change, and a document
