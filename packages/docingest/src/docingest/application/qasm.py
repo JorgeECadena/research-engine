@@ -1,24 +1,27 @@
 """Export the circuits of stored documents as OpenQASM 3 programs.
 
 The canonical store holds Markdown, and a circuit reaches it as a fenced ``latex`` block. This
-use case reads those blocks through the same domain reader that ``ask`` uses, emits one program per
-part of a drawn equality, and writes deterministic files. It never changes the store, the
-manifest or the cache key: every file it writes is derived and can be made again from
-``document.md``.
+use case walks those blocks, calls the :class:`~docingest.ports.CircuitExporter` port once per
+circuit, and writes or removes deterministic files. The emitter and its simulator reader sit
+behind that port; this service neither imports them nor interprets a gate, a control or an angle.
 
-The output directory is a sibling of the document folders (``<output_dir>/qasm`` by default), so
-``DocumentStore.corpus`` never mistakes it for a document: it has no ``manifest.json``.
+It never changes the store, the manifest or the cache key: every file it writes is derived and can
+be made again from ``document.md``. The output directory is a sibling of the document folders
+(``<output_dir>/qasm`` by default), so ``DocumentStore.corpus`` never mistakes it for a document:
+it has no ``manifest.json``.
 """
 
 from __future__ import annotations
 
+import contextlib
+import os
+import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 from ..domain.circuits import circuit_code_blocks, gate_list
-from ..domain.qasm import to_qasm
-from ..ports import DocumentStore, StoredDocument
+from ..ports import CircuitExporter, DocumentStore, StoredDocument
 
 __all__ = ["QasmExportReport", "QasmExportService", "QasmFile"]
 
@@ -59,11 +62,16 @@ class QasmExportReport:
 
 
 class QasmExportService:
-    """Read stored documents, emit their circuits, write one file per program."""
+    """Read stored documents, ask the exporter port, write one file per program."""
 
-    def __init__(self, store: DocumentStore, out: Path):
+    def __init__(self, store: DocumentStore, out: Path, exporter: CircuitExporter):
         self.store = store
         self.out = Path(out)
+        self.exporter = exporter
+
+    def check_values(self, values: Mapping[str, str] | None = None) -> None:
+        """Refuse a bad ``--set`` once, before a command exports any circuit."""
+        self.exporter.check_values(values)
 
     def export_corpus(
         self,
@@ -95,10 +103,12 @@ class QasmExportService:
         out: Path | None,
         warnings: Sequence[str] = (),
     ) -> QasmExportReport:
+        self.exporter.check_values(values)
         target = Path(out or self.out)
         files: list[QasmFile] = []
         refusals: list[str] = []
         notes = list(warnings)
+        symbols: set[str] = set()
         circuits = 0
         for document in documents:
             manifest = document.manifest
@@ -114,11 +124,19 @@ class QasmExportService:
                 for circuit_no, circuit in enumerate(listing.circuits, 1):
                     found += 1
                     circuits += 1
-                    export = to_qasm(
+                    stale = _remove_stale(
+                        target, f"{manifest.doc_id[:16]}-b{block_no:02d}-c{circuit_no:02d}-p"
+                    )
+                    export = self.exporter.export(
                         circuit,
                         values=values,
                         origin=f"{name}, block {block_no}, circuit {circuit_no}",
+                        tool="docingest",
                     )
+                    symbols.update(export.symbols)
+                    where = f"{name}, block {block_no}, circuit {circuit_no}"
+                    for note in export.notes:
+                        notes.append(f"{where}: {note}")
                     for program in export.programs:
                         filename = (
                             f"{manifest.doc_id[:16]}-b{block_no:02d}-"
@@ -140,9 +158,17 @@ class QasmExportService:
                             )
                         )
                     for reason in export.reasons:
-                        refusals.append(f"{name}, block {block_no}, circuit {circuit_no}: {reason}")
+                        refusals.append(f"{where}: {reason}")
+                    if stale and export.reasons:
+                        notes.append(
+                            f"{where}: removed {stale} stale QASM file(s) from an earlier export"
+                        )
             if found == 0:
                 notes.append(f"{name}: no circuits found")
+        for key in sorted(values or {}):
+            name = _binding_name(key)
+            if name not in symbols:
+                notes.append(f"binding {key!r} matches no symbol of any exported circuit")
         return QasmExportReport(
             out=target,
             documents=len(documents),
@@ -175,6 +201,34 @@ def _select(documents: Sequence[StoredDocument], selectors: Sequence[str]) -> li
     return list(chosen.values())
 
 
+def _binding_name(key: str) -> str:
+    """The canonical name used by the emitter (``\\theta`` and ``{theta}`` are ``theta``)."""
+    name = key.strip()
+    if name.startswith("{") and name.endswith("}"):
+        name = name[1:-1].strip()
+    return name.lstrip("\\")
+
+
+def _remove_stale(target: Path, prefix: str) -> int:
+    """Delete the programs of this circuit from an earlier export; return how many."""
+    if not target.exists():
+        return 0
+    removed = 0
+    for path in target.glob(f"{prefix}*.qasm"):
+        path.unlink()
+        removed += 1
+    return removed
+
+
 def _write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8", newline="\n")
+    descriptor, temporary = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+        os.replace(temporary, path)
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(temporary)

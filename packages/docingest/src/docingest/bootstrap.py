@@ -292,9 +292,12 @@ class Container:
     @cached_property
     def qasm_export(self) -> QasmExportService:
         """Write the circuits of stored documents, derived from ``document.md``."""
+        from .adapters.qasm import QuantumSimExporter  # lazy: this module imports numpy
+
         return QasmExportService(
             store=self.adapter("store"),
             out=Path(self.cfg.output_dir) / "qasm",
+            exporter=QuantumSimExporter(),
         )
 
     @cached_property

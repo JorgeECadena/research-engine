@@ -490,7 +490,7 @@ not exported. The files are derived and can be made again at any time.
 | `--doc` | text, repeatable | every stored document | Select a document by full `doc_id`, by source name, or by a unique `doc_id` prefix of at least 8 characters. An unknown or ambiguous selector is an error. |
 | `--config`, `-c` | file | `config/pipeline.toml` | Pipeline configuration. |
 | `--out` | directory | `<output_dir>/qasm` | Where to write the `.qasm` files. The directory is created if it does not exist. |
-| `--set` | `NAME=VALUE`, repeatable | none | Bind a free gate parameter for every circuit of the call. The value is LaTeX arithmetic (`pi/4`, `\frac{\pi}{2}`, `0.5`); an unknown or malformed value refuses the circuit. |
+| `--set` | `NAME=VALUE`, repeatable | none | Bind a free gate parameter for every circuit of the call. The value is LaTeX arithmetic (`pi/4`, `\frac{\pi}{2}`, `0.5`). A malformed name or value is a usage error before any circuit is written; a name that matches no symbol is a warning. |
 | `--allow-partial` | flag | off | Exit 0 when some circuits are refused; the programs that could be made are still written. |
 
 **What it does.**
@@ -499,33 +499,36 @@ not exported. The files are derived and can be made again at any time.
    than 8 characters is not a prefix: use the source name or a longer id.
 2. For each document, finds its fenced `latex` code blocks and reads each block's circuits with
    `gate_list`. A document with no circuit is a warning, not a failure.
-3. Calls `to_qasm` for each circuit with the source name and the block and circuit numbers as
-   provenance, and with the `--set` bindings. `to_qasm` delegates to `quantum_sim.qasm.to_qasm`,
-   which reads the document with `from_gate_list`. One program is written per part; the drawn
-   sign of a part is a `// sign:` comment.
-4. Writes `<doc_id[:16]>-b<block:02d>-c<circuit:02d>-p<part:02d>.qasm` (UTF-8, LF, no timestamps)
-   and prints a table of the documents and files, then any warnings and refusals.
+3. Calls the `CircuitExporter` port for each circuit with the source name and the block and
+   circuit numbers as provenance, and with the `--set` bindings. The adapter calls
+   `quantum_sim.qasm.to_qasm`, which reads the document with `from_gate_list`. One program is
+   written per part; the drawn sign of a part and every binding are comments.
+4. Deletes that circuit's files from an earlier export, writes
+   `<doc_id[:16]>-b<block:02d>-c<circuit:02d>-p<part:02d>.qasm` atomically (UTF-8, LF, no
+   timestamps), and prints a table of the documents and files, then any warnings and refusals.
 5. Does not stop at a refused circuit: the other circuits of the same document and of the later
    documents are still exported. The refused circuit contributes no programs (the simulator's
-   reader is all-or-nothing), and its refusal is printed with the simulator's reason.
+   reader is all-or-nothing), its old programs are removed, and its refusal is printed with the
+   simulator's reason.
 
-**Output contract.** The header names the wire convention (`q[0]` is wire 1, the top of the
-drawing), the source and part, the wire legends, and the drawn sign when there is one. The body is
-`OPENQASM 3.0;`, `include "stdgates.inc";`, `qubit[n] q;`, a `bit[n] c;` when a part measures, and
-the gates. The exact gate mapping and the refusal list are in
-[ADR 0006](../../../docs/adr/0006-openqasm-3-export.md#gate-mapping) and
-[domain/README.md](../domain/README.md#qasmpy).
+**Output contract.** The header names the tool, the source and part, the drawn sign, every
+binding, the wire convention (`q[0]` is wire 1, the top of the drawing, and the simulator reads it
+as the most significant bit), the order `c` prints bits, the `bit[n]` allocation, and the wire
+legends. The body is `OPENQASM 3.0;`, `include "stdgates.inc";`, `qubit[n] q;`, a `bit[n] c;` when
+a part measures, and the gates. The exact gate mapping and the refusal list are in
+[ADR 0006](../../../docs/adr/0006-openqasm-3-export.md#gate-mapping).
 
 **Exit behaviour.** 0 when the files were written and no circuit was refused (warnings about a
 document with no circuits do not change it). 1 when a circuit was refused and `--allow-partial` was
-not given, when no program could be written at all, or when a selector matches no document or more
-than one. 2 for usage errors, such as a `--set` without `=`.
+not given, when no program could be written at all, when a selector matches no document or more
+than one, or when an I/O error stops the export. 2 for usage errors, such as a `--set` without
+`=` or a value the emitter cannot parse.
 
 **Examples.**
 
 ```bash
 uv run docingest circuits export                                  # every stored document
-uv run docingest circuits export --doc 3fa9c2d1 --out /tmp/qasm   # one document, another folder
+uv run docingest circuits export --doc 01234567 --out /tmp/qasm   # one document, another folder
 uv run docingest circuits export --set 'theta=pi/4' --allow-partial
 ```
 

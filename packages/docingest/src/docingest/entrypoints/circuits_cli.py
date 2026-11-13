@@ -38,6 +38,9 @@ def _run[T](config: Path | None, action: Callable[[Container], T]) -> T:
     except (DocingestError, RuntimeError, ValueError) as e:
         console.print(f"[red]error[/]: {escape(str(e))}")
         raise typer.Exit(1) from e
+    except OSError as e:
+        console.print(f"[red]error[/]: cannot finish the export: {escape(str(e))}")
+        raise typer.Exit(1) from e
 
 
 def _bindings(items: Sequence[str] | None) -> dict[str, str]:
@@ -47,13 +50,15 @@ def _bindings(items: Sequence[str] | None) -> dict[str, str]:
         name = name.strip()
         if not separator or not name:
             raise typer.BadParameter("--set expects NAME=VALUE")
+        if name in values:
+            raise typer.BadParameter(f"--set names {name!r} twice")
         values[name] = value.strip()
     return values
 
 
 def _report(report: QasmExportReport) -> None:
     if report.files:
-        table = Table(title=f"OpenQASM 3 export — {report.out}")
+        table = Table(title=f"OpenQASM 3 export: {report.out}")
         for column in ("document", "block", "circuit", "part", "file"):
             table.add_column(column)
         for file in report.files:
@@ -107,10 +112,15 @@ def export(
     nothing could be exported.
     """
     values = _bindings(set_values)
-    report = _run(
-        config,
-        lambda container: container.qasm_export.export_corpus(doc or (), values=values, out=out),
-    )
+
+    def action(container):
+        try:
+            container.qasm_export.check_values(values)
+        except ValueError as e:
+            raise typer.BadParameter(str(e)) from e
+        return container.qasm_export.export_corpus(doc or (), values=values, out=out)
+
+    report = _run(config, action)
     _report(report)
     if not report.files:
         raise typer.Exit(1)

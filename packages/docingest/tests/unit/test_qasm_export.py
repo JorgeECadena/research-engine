@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from fakes import InMemoryStore, add_doc
 
+from docingest.adapters.qasm import QuantumSimExporter
 from docingest.application.qasm import QasmExportService
 
 
@@ -20,6 +21,7 @@ THETA = quantikz("& \\gate{R_y(\\theta)} & \\qw")
 OPEN_CONTROL = quantikz("& \\octrl{1} & \\qw", "& \\gate{X} & \\qw")
 AMBIGUOUS_U = quantikz("& \\gate{U} & \\qw")
 RZZ = quantikz("\\gate[2]{R_{zz}(0.5)} & \\qw", "& \\qw")
+ONE_INPUT = quantikz("\\lstick{\\ket{1}} & \\gate{H} & \\qw")
 
 
 def document(store, doc_id: str, *circuits: str, name: str = "a.md"):
@@ -28,7 +30,9 @@ def document(store, doc_id: str, *circuits: str, name: str = "a.md"):
 
 
 def export(store, out: Path, selectors=(), values=None):
-    return QasmExportService(store, out).export_corpus(selectors, values=values)
+    return QasmExportService(store, out, QuantumSimExporter()).export_corpus(
+        selectors, values=values
+    )
 
 
 def test_one_circuit_becomes_one_named_program(tmp_path):
@@ -173,8 +177,10 @@ def test_set_binds_a_free_parameter(tmp_path):
     assert refused.files == () and "theta" in refused.refusals[0]
 
     bound = export(store, tmp_path / "bound", values={"theta": "pi/4"})
-    assert bound.ok
-    assert "ry(pi/4) q[0];" in bound.files[0].path.read_text()
+    assert bound.ok and not bound.warnings
+    text = bound.files[0].path.read_text()
+    assert "// bound: theta = pi/4" in text
+    assert "ry(pi/4.0) q[0];" in text
 
 
 def test_out_overrides_the_service_default(tmp_path):
@@ -182,7 +188,7 @@ def test_out_overrides_the_service_default(tmp_path):
     document(store, "a" * 64, H)
     default, custom = tmp_path / "default", tmp_path / "custom"
 
-    report = QasmExportService(store, default).export_corpus(out=custom)
+    report = QasmExportService(store, default, QuantumSimExporter()).export_corpus(out=custom)
 
     assert report.out == custom
     assert report.files[0].path.parent == custom
@@ -194,7 +200,9 @@ def test_export_documents_is_the_post_ingest_path(tmp_path):
     document(store, "a" * 64, H)
     docs, _ = store.corpus()
 
-    report = QasmExportService(store, tmp_path / "qasm").export_documents(docs)
+    report = QasmExportService(store, tmp_path / "qasm", QuantumSimExporter()).export_documents(
+        docs
+    )
 
     assert report.written == 1 and report.documents == 1
 
@@ -211,3 +219,85 @@ def test_an_unreadable_markdown_is_a_warning(tmp_path):
 
     assert report.files == ()
     assert report.warnings == ("a.md: cannot read the stored Markdown (gone)",)
+
+
+def test_a_refusal_removes_the_programs_of_an_earlier_run(tmp_path):
+    store = InMemoryStore()
+    document(store, "a" * 64, THETA)
+    out = tmp_path / "qasm"
+
+    first = export(store, out, values={"theta": "pi/4"})
+    [file] = first.files
+    assert file.path.exists()
+
+    second = export(store, out)
+
+    assert not second.ok
+    assert not file.path.exists()
+    assert any("removed 1 stale QASM file(s)" in warning for warning in second.warnings)
+
+
+def test_a_reexport_removes_a_part_that_the_document_lost(tmp_path):
+    store = InMemoryStore()
+    document(store, "a" * 64, H)
+    out = tmp_path / "qasm"
+    out.mkdir()
+    stale = out / "aaaaaaaaaaaaaaaa-b01-c01-p02.qasm"
+    stale.write_text("stale")
+
+    report = export(store, out)
+
+    assert report.ok
+    assert not stale.exists()
+    assert "p02" not in {file.path.name for file in report.files}
+
+
+def test_a_bad_binding_is_a_usage_error_not_a_refused_circuit(tmp_path):
+    store = InMemoryStore()
+    document(store, "a" * 64, H, THETA)
+
+    with pytest.raises(ValueError, match="value for 'theta'"):
+        export(store, tmp_path / "qasm", values={"theta": "\\cos(1)"})
+
+
+def test_reader_notes_are_in_the_report(tmp_path):
+    store = InMemoryStore()
+    document(store, "a" * 64, ONE_INPUT)
+    report = export(store, tmp_path / "qasm")
+
+    assert not report.ok
+    assert any("starts an input in |1>" in refusal for refusal in report.refusals)
+    assert any("is not read as an input state" in warning for warning in report.warnings)
+
+
+def test_a_binding_that_matches_no_symbol_is_reported(tmp_path):
+    store = InMemoryStore()
+    document(store, "a" * 64, H)
+    document(store, "b" * 64, THETA)
+
+    report = export(
+        store,
+        tmp_path / "qasm",
+        values={"theta": "pi/4", "thetta": "1", "pi": "3"},
+    )
+
+    assert report.ok
+    assert "binding 'thetta' matches no symbol of any exported circuit" in report.warnings
+    assert "binding 'pi' matches no symbol of any exported circuit" in report.warnings
+    assert not any("binding 'theta'" in warning for warning in report.warnings)
+
+
+def test_a_failed_write_leaves_neither_a_partial_file_nor_a_temporary_file(tmp_path, monkeypatch):
+    store = InMemoryStore()
+    document(store, "a" * 64, H)
+    out = tmp_path / "qasm"
+
+    def fail(source, destination):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("docingest.application.qasm.os.replace", fail)
+    with pytest.raises(OSError, match="disk full"):
+        export(store, out)
+
+    assert not (out / "aaaaaaaaaaaaaaaa-b01-c01-p01.qasm").exists()
+    assert list(out.iterdir()) == []

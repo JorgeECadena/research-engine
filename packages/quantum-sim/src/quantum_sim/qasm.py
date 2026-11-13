@@ -6,12 +6,14 @@ here too, and nothing is marked ``"ok"`` that the simulator would not run. The o
 gates that ``stdgates.inc`` defines; a gate with no exact spelling is refused rather than guessed
 at.
 
-The rules are the rules of the reader plus three format rules:
+The rules are the rules of the reader plus four format rules:
 
 * a gate with an open control is exported as ``x`` before and after the operation, which is exact
   for every gate and keeps the open control from becoming a closed one;
 * a free angle is rendered as an OpenQASM expression, not rounded to a decimal; a symbol with no
   binding refuses that part;
+* every number is a float literal (``5.0``, ``2.0**3.0``), because OpenQASM's ``/`` on integers is
+  integer division and an int-to-angle cast is not allowed;
 * a ``|1>`` drawn at an input (a wire legend or a text item) refuses the document: the export does
   not add an initialization that the drawing did not state as an operation.
 
@@ -31,9 +33,15 @@ from quantum_sim.angles import Angle, format_number, parse_angle
 from quantum_sim.domain import MEASURE, AngleError, RefusedError
 from quantum_sim.formats import ParametricCircuit, ParametricOp, Reading, from_gate_list
 
-__all__ = ["QASM_VERSION", "QasmExport", "QasmProgram", "to_qasm"]
+__all__ = [
+    "QASM_FORMAT_VERSION",
+    "QasmExport",
+    "QasmProgram",
+    "to_qasm",
+    "validate_bindings",
+]
 
-QASM_VERSION = 1
+QASM_FORMAT_VERSION = 1
 
 # A caller may write ``pi/4`` as a binding value; the angle grammar spells the constant ``\pi``.
 _PI = re.compile(r"(?<![\\A-Za-z])pi(?![A-Za-z])")
@@ -85,12 +93,16 @@ class QasmExport:
 
     A refused document has no programs: a drawing with one part the exporter cannot express is
     refused as a whole, so no side of a drawn equality is written alone. ``reasons`` names each
-    refused part (the reader's reasons when the simulator refused the document).
+    refused part (the reader's reasons when the simulator refused the document). ``notes`` are
+    the reader's notes; ``symbols`` are the free parameters the document mentions, whether or
+    not the caller bound them.
     """
 
     status: str
     programs: tuple[QasmProgram, ...]
     reasons: tuple[str, ...]
+    notes: tuple[str, ...] = ()
+    symbols: tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -106,12 +118,14 @@ def to_qasm(
     *,
     values: Mapping[str, str | float | int] | None = None,
     origin: str = "",
+    tool: str = "quantum-sim",
 ) -> QasmExport:
     """Read ``document`` with :func:`from_gate_list` and export it as OpenQASM 3.
 
     ``values`` binds a free parameter by its canonical name (``theta`` or ``\\theta``) to a LaTeX
-    expression or a number. ``origin`` is a one-line provenance comment. The function returns
-    refusals as data; it raises only for a programming error.
+    expression or a number. ``origin`` is a one-line provenance comment. ``tool`` is the name in
+    the generated-by header; a caller that embeds the exporter passes its own. The function
+    returns refusals as data; it raises only for a programming error.
     """
     try:
         reading = from_gate_list(document)
@@ -120,18 +134,48 @@ def to_qasm(
     try:
         bindings = _bindings(values)
     except _Bad as exc:
-        return QasmExport("refused", (), (str(exc),))
+        return QasmExport("refused", (), (str(exc),), notes=reading.notes, symbols=reading.symbols)
     inputs = [bit for _, bit in reading.input_kets]
     if "1" in inputs:
         return QasmExport(
             "refused",
             (),
             ("the drawing starts an input in |1>, which the export does not add",),
+            notes=reading.notes,
+            symbols=reading.symbols,
         )
-    return _export(reading, bindings, origin)
+    bound = tuple(
+        sorted((_binding_name(key), _comment(str(value))) for key, value in (values or {}).items())
+    )
+    return _export(reading, bindings, _Provenance(origin, None, tool, bound))
 
 
-def _export(reading: Reading, bindings: Mapping[str, Angle], origin: str) -> QasmExport:
+def validate_bindings(values: Mapping[str, str | float | int] | None) -> None:
+    """Refuse a binding value once, before a caller exports any circuit.
+
+    A ``ValueError`` is a usage error: the caller's value or name is wrong, not one circuit.
+    """
+    try:
+        _bindings(values)
+    except _Bad as exc:
+        raise ValueError(str(exc)) from None
+
+
+@dataclass(frozen=True)
+class _Provenance:
+    """What the header says about the program and the caller."""
+
+    origin: str
+    sign: str | None
+    tool: str
+    bound: tuple[tuple[str, str], ...]
+
+
+def _export(
+    reading: Reading,
+    bindings: Mapping[str, Angle],
+    provenance: _Provenance,
+) -> QasmExport:
     programs: list[QasmProgram] = []
     reasons: list[str] = []
     total = len(reading.circuits)
@@ -148,13 +192,19 @@ def _export(reading: Reading, bindings: Mapping[str, Angle], origin: str) -> Qas
             circuit,
             n_clbits,
             body=body,
-            origin=f"{origin}, part {index}/{total}" if origin else "",
-            sign=sign,
+            provenance=_Provenance(
+                origin=f"{provenance.origin}, part {index}/{total}" if provenance.origin else "",
+                sign=sign,
+                tool=provenance.tool,
+                bound=provenance.bound,
+            ),
         )
         programs.append(QasmProgram(index, sign, text, circuit.n_wires, n_clbits))
     if reasons:
-        return QasmExport("refused", (), tuple(reasons))
-    return QasmExport("ok", tuple(programs), ())
+        return QasmExport(
+            "refused", (), tuple(reasons), notes=reading.notes, symbols=reading.symbols
+        )
+    return QasmExport("ok", tuple(programs), (), notes=reading.notes, symbols=reading.symbols)
 
 
 # ------------------------------------------------------------------ one part
@@ -234,16 +284,23 @@ def _emit(op: ParametricOp, base: str, params: tuple[str, ...]) -> str:
 # ------------------------------------------------------------------ parameters
 
 
+def _binding_name(key: str) -> str:
+    """The canonical name of a caller's binding key (``\\theta`` and ``{theta}`` are ``theta``)."""
+    name = key.strip()
+    if name.startswith("{") and name.endswith("}"):
+        name = name[1:-1].strip()
+    return name.lstrip("\\")
+
+
 def _bindings(values: Mapping[str, str | float | int] | None) -> dict[str, Angle]:
     """Parse every caller binding once; a value may not name another symbol."""
     bound: dict[str, Angle] = {}
     for key, value in (values or {}).items():
-        name = key.strip()
-        if name.startswith("{") and name.endswith("}"):
-            name = name[1:-1].strip()
-        name = name.lstrip("\\")
+        name = _binding_name(key)
         if not name:
             raise _Bad("a parameter binding has an empty name")
+        if name in bound:
+            raise _Bad(f"parameter {name!r} is bound twice")
         try:
             if isinstance(value, bool):
                 raise AngleError("a parameter value cannot be true or false")
@@ -265,14 +322,19 @@ def _angle(angle: Angle, bindings: Mapping[str, Angle], unbound: set[str]) -> st
     return _strip(_node(angle.tree, bindings, unbound))
 
 
+def _number_text(number: float) -> str:
+    """A number as an OpenQASM float literal; an integer literal would change the meaning."""
+    text = format_number(float(number))
+    if "." not in text:
+        text += ".0"
+    return f"({text})" if text.startswith("-") else text
+
+
 def _node(node: Any, bindings: Mapping[str, Angle], unbound: set[str]) -> str:
     kind = node[0]
     text: str
     if kind == "num":
-        value = format_number(float(node[1]))
-        if value.endswith(".0") and not value.startswith("-0.0"):
-            value = value[:-2]
-        text = f"({value})" if value.startswith("-") else value
+        text = _number_text(float(node[1]))
     elif kind == "pi":
         text = "pi"
     elif kind == "sym":
@@ -288,7 +350,7 @@ def _node(node: Any, bindings: Mapping[str, Angle], unbound: set[str]) -> str:
     elif kind == "sqrt":
         text = f"sqrt({_node(node[1], bindings, unbound)})"
     elif kind == "pow":
-        text = f"({_node(node[1], bindings, unbound)}**{node[2]})"
+        text = f"({_node(node[1], bindings, unbound)}**{_number_text(float(node[2]))})"
     else:
         left, right = _node(node[1], bindings, unbound), _node(node[2], bindings, unbound)
         operator = {"add": "+", "sub": "-", "mul": "*", "div": "/"}[kind]
@@ -317,16 +379,19 @@ def _render(
     n_clbits: int,
     *,
     body: list[str],
-    origin: str,
-    sign: str | None,
+    provenance: _Provenance,
 ) -> str:
     n_qubits = circuit.n_wires
-    lines = [f"// Generated by docingest (qasm format {QASM_VERSION})"]
-    if origin:
-        lines.append(f"// source: {_comment(origin)}")
-    if sign is not None:
-        lines.append(f"// sign: {_comment(sign)}")
-    lines.append("// wire 1 (top of the drawing) = q[0]; OpenQASM fixes no bit order")
+    lines = [f"// Generated by {_comment(provenance.tool)} (qasm format {QASM_FORMAT_VERSION})"]
+    if provenance.origin:
+        lines.append(f"// source: {_comment(provenance.origin)}")
+    if provenance.sign is not None:
+        lines.append(f"// sign: {_comment(provenance.sign)}")
+    for name, value in provenance.bound:
+        lines.append(f"// bound: {name} = {value}")
+    lines.append("// wire 1 (top) = q[0]; the simulator reads it as the most significant bit")
+    lines.append("// c prints q[0] first, so c[0] is wire 1")
+    lines.append("// bit[n] declares one classical bit per wire, not only the measured ones")
     legends = "; ".join(_comment(wire) for wire in circuit.wire_labels if wire.strip())
     if legends:
         lines.append(f"// wires: {legends}")

@@ -100,7 +100,64 @@ def test_set_binds_a_free_parameter(setup):
     bound = runner.invoke(app, ["circuits", "export", "--config", str(cfg), "--set", "theta=pi/4"])
     assert bound.exit_code == 0, bound.output
     [path] = exported(out)
-    assert "ry(pi/4) q[0];" in path.read_text()
+    text = path.read_text()
+    assert "// bound: theta = pi/4" in text
+    assert "ry(pi/4.0) q[0];" in text
+
+
+def test_a_malformed_set_is_a_usage_error(setup):
+    runner, cfg, raw, _out = setup
+    (raw / "circuit.md").write_text(markdown(H))
+    assert ingest(runner, cfg, raw).exit_code == 0
+
+    missing = runner.invoke(app, ["circuits", "export", "--config", str(cfg), "--set", "theta"])
+    assert missing.exit_code == 2
+    assert "--set expects NAME=VALUE" in missing.output
+
+    repeated = runner.invoke(
+        app, ["circuits", "export", "--config", str(cfg), "--set", "theta=1", "--set", "theta=2"]
+    )
+    assert repeated.exit_code == 2
+    assert "twice" in repeated.output
+
+
+def test_a_bad_set_value_fails_once_before_writing_any_circuit(setup):
+    runner, cfg, raw, out = setup
+    (raw / "mixed.md").write_text(markdown(H, THETA))
+    assert ingest(runner, cfg, raw).exit_code == 0
+
+    result = runner.invoke(
+        app, ["circuits", "export", "--config", str(cfg), "--set", "theta=\\cos(1)"]
+    )
+
+    assert result.exit_code == 2
+    assert "value for 'theta'" in result.output
+    assert exported(out) == []
+
+
+def test_an_unwritable_out_is_a_clear_error(setup, tmp_path):
+    runner, cfg, raw, _out = setup
+    (raw / "circuit.md").write_text(markdown(H))
+    assert ingest(runner, cfg, raw).exit_code == 0
+    not_a_directory = tmp_path / "file"
+    not_a_directory.write_text("")
+
+    result = runner.invoke(
+        app, ["circuits", "export", "--config", str(cfg), "--out", str(not_a_directory)]
+    )
+
+    assert result.exit_code == 1
+    assert "cannot finish the export" in result.output
+
+
+def test_an_empty_corpus_exits_one(setup):
+    runner, cfg, _raw, out = setup
+
+    result = runner.invoke(app, ["circuits", "export", "--config", str(cfg)])
+
+    assert result.exit_code == 1
+    assert "wrote 0 program(s)" in result.output
+    assert not (out / "qasm").exists()
 
 
 def test_a_refusal_exits_one_and_allow_partial_exits_zero(setup):
@@ -210,4 +267,4 @@ def test_crawl_qasm_without_ingest_is_rejected(setup):
     result = runner.invoke(
         app, ["crawl", "anything", "--config", str(cfg), "--qasm", "--no-ingest"]
     )
-    assert result.exit_code != 0
+    assert result.exit_code == 2

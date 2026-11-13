@@ -2,7 +2,7 @@
 
 The golden fixtures are ``circuit/1`` documents and the exact program the emitter must write for
 them. The parser is a development dependency: it checks the syntax of every golden program and of
-the programs a seeded property test generates, so a gate spelling or a modifier that QASM does not
+the programs a deterministic property test generates, so a gate spelling or a modifier that QASM does not
 accept fails here even when the string tests still pass.
 """
 
@@ -108,6 +108,16 @@ def test_golden_programs_match_and_parse(fixture: Path) -> None:
         parser.parse(program.text)
 
 
+def test_refused_fixtures_match_their_reasons() -> None:
+    refused = FIXTURES / "refused"
+    for fixture in sorted(refused.glob("*.json")):
+        export = to_qasm(json.loads(fixture.read_text()))
+        expected = tuple(fixture.with_suffix(".reason").read_text().splitlines())
+        assert export.status == "refused", fixture.stem
+        assert export.reasons == expected, fixture.stem
+        assert export.programs == (), fixture.stem
+
+
 def test_every_emitted_gate_is_in_stdgates() -> None:
     assert _STDGATES <= STDGATES
     assert "sxdg" not in _STDGATES
@@ -175,7 +185,7 @@ OPS = [
 ]
 
 
-@settings(max_examples=40, deadline=None)
+@settings(max_examples=40, deadline=None, derandomize=True)
 @given(st.lists(st.sampled_from(OPS), min_size=1, max_size=6))
 def test_random_circuits_emit_parsable_qasm(ops: list[tuple]) -> None:
     part = [

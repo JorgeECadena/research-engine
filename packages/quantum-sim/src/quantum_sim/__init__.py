@@ -43,7 +43,7 @@ from quantum_sim.formats import (
     to_gate_list,
 )
 from quantum_sim.labels import ResolvedLabel, label_of, resolve_label
-from quantum_sim.qasm import QASM_VERSION, QasmExport, QasmProgram, to_qasm
+from quantum_sim.qasm import QASM_FORMAT_VERSION, QasmExport, QasmProgram, to_qasm
 
 __version__ = version("quantum-sim")
 
@@ -57,7 +57,7 @@ __all__ = [
     "MAX_STATEVECTOR_WIRES",
     "MAX_UNITARY_WIRES",
     "MEASURE",
-    "QASM_VERSION",
+    "QASM_FORMAT_VERSION",
     "RANDOM_STATES",
     "RESULT_FORMAT",
     "Angle",

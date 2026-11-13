@@ -141,7 +141,7 @@ type = "forbidden"
 source_modules = ["docingest.domain"]
 forbidden_modules = [
     "pypdfium2", "PIL", "numpy", "mlx", "mlx_vlm", "paperqa", "docling", "pypandoc",
-    "huggingface_hub", "httpx", "urllib", "typer", "rich", "jiwer",
+    "huggingface_hub", "httpx", "urllib", "typer", "rich", "jiwer", "quantum_sim",
 ]
 
 [[tool.importlinter.contracts]]
@@ -150,7 +150,7 @@ type = "forbidden"
 source_modules = ["docingest.application", "docingest.ports"]
 forbidden_modules = [
     "pypdfium2", "mlx", "mlx_vlm", "paperqa", "docling", "pypandoc", "huggingface_hub",
-    "httpx", "typer", "rich",
+    "httpx", "typer", "rich", "quantum_sim",
 ]
 
 [[tool.importlinter.contracts]]

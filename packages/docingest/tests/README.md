@@ -85,7 +85,7 @@ flowchart LR
 
 The OpenQASM 3 emitter's unit tests, golden fixtures and contract/property tests live in
 `packages/quantum-sim/tests/` (`test_qasm.py`, `test_qasm_contracts.py`, `fixtures/qasm/`), because
-the emitter itself lives in `quantum-sim`. This package tests only the wrapper and the service.
+the emitter itself lives in `quantum-sim`. This package tests only the `QuantumSimExporter` adapter and the service.
 
 ### unit/
 
@@ -135,7 +135,7 @@ the emitter itself lives in `quantum-sim`. This package tests only the wrapper a
 | `test_timing.py` | `tests/timing.py` on a fake clock: linear work passes after three rounds, quadratic work fails all three attempts, a burst of load in one attempt or one round is not held against the code, the floor and the ceiling, the collector switched off and back, `timeout_notes` |
 | `test_text.py` | `domain.text`: garbled-text detection, the math-symbol and equals-sign counts (the edges of every symbol block, `ϕ`, `ˆ`, `™`), de-hyphenation, page splitting |
 | `test_structure.py` | `domain.structure`, `furniture` and `headings` on synthetic lines: running headers and page numbers, paragraphs, hyphenation, headings, footnotes |
-| `test_qasm_export.py` | `QasmExportService`: selection by id prefix, source name and ambiguity; file naming and content; `--set`; open-control conjugation; refusals that do not stop the other circuits; a simulator-refused ambiguous gate and a gate with no standard spelling (both write nothing); warnings for no circuits and an unreadable Markdown; the output override; and the `export_documents` path the post-ingest hook uses |
+| `test_qasm_export.py` | `QasmExportService`: selection by id prefix, source name and ambiguity; file naming, content and atomic writes; `--set`; open-control conjugation; refusals that do not stop the other circuits; stale programs removed after a refusal; a simulator-refused ambiguous gate and a gate with no standard spelling (both write nothing); warnings for no circuits, an unreadable Markdown, reader notes and bindings that match no symbol; the output override; and the `export_documents` path the post-ingest hook uses |
 | `test_quantum_sim_fixtures.py` | The `circuit/1` documents saved in `packages/quantum-sim/tests/fixtures/bridge/` are what `gate_list` returns for the LaTeX sources next to them (the other half of quantum-sim's bridge tests), and an unknown command or a text token put in any of those sources is never read as `parsed` |
 | `test_wire_names.py` | docingest's copy of quantum-sim's wire-name grammar (`_WIRE_NAME`) gives the same verdict as quantum-sim on every sample of `packages/quantum-sim/tests/fixtures/wire_names.json`; a word in `\text` or `\mathrm` is never a name |
 
@@ -159,7 +159,7 @@ the emitter itself lives in `quantum-sim`. This package tests only the wrapper a
 | `test_filesystem_store.py` | `FilesystemStore` file permissions, no leftover temp files, a corrupt cached manifest treated as a cache miss |
 | `test_index_cli.py` | `docingest index build`, `status` and `remove` with fake plugins |
 | `test_index_on_ingest.py` | `ingest --index` and `crawl --index`: off by default, only the papers of the run, checked before any work, a failing update keeps the papers |
-| `test_qasm_cli.py` | `docingest circuits export` end to end: ingest a Markdown circuit, select it, set `--out` and `--set`, read the `.qasm` on disk, the exit codes for a refusal, `--allow-partial`, no circuit and an unknown document, and `ingest --qasm` / `crawl --qasm` as best-effort hooks |
+| `test_qasm_cli.py` | `docingest circuits export` end to end: ingest a Markdown circuit, select it, set `--out` and `--set`, read the `.qasm` on disk, the exit codes for a refusal, `--allow-partial`, no circuit, an unknown document, a malformed name, a bad value, an unwritable output (all before or without writing a program), an empty corpus, and `ingest --qasm` / `crawl --qasm` as best-effort hooks |
 | `test_magic_detector.py` | `MagicBytesDetector` on real files |
 | `test_openai_ocr.py` | `OpenAICompatibleOcr` against a scripted local OpenAI-compatible server: request shape, retries, the retry ladder (stricter retries, more room for a dense page, a server that refuses it), authentication |
 | `test_ask_equation_lookup_paperqa.py` | The whole ask path with a mocked LLM and the real `PaperQAAnswerer`: the answer prompt holds the header and the chunk of each paper's Eq. (2) with `skip_summary` and no request holds them without it, the sentence about equation numbers is in the copy rule once, the prompt keeps its size, the retry with fewer sources drops the lowest-ranked chunks and keeps the best paper's, a failing lookup still answers |
