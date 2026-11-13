@@ -626,7 +626,7 @@ To also sign in from a browser, open `http://<tailscale-address>:8091/` in a pri
 
 ## Export a paper's circuits as OpenQASM 3
 
-The circuits of an ingested paper are the fenced `latex` blocks of its `document.md`. docingest can write each one as an OpenQASM 3 program, the text format that quantum SDKs and hardware providers read. The command is a read path over the corpus: it changes nothing in the store, needs no model server and no GPU, and can be run as often as you like.
+The circuits of an ingested paper are the fenced `latex` blocks of its `document.md`. docingest can write each one as an OpenQASM 3 program, the text format that quantum SDKs and hardware providers read. The command is a read path over the corpus: it changes nothing in the store, needs no model server and no GPU, and can be run as often as you like. Every document is first read by `quantum-sim`'s `circuit/1` reader, so the export contains only what the simulator accepts: a circuit it refuses is reported with the simulator's reason and no program is written for it.
 
 From the package folder, with the configuration from step 4:
 
@@ -664,7 +664,7 @@ uv run docingest circuits export --doc 2409.13740v1.tex --out /tmp/qasm -c "$CON
 uv run docingest circuits export --set 'theta=pi/4' -c "$CONFIG"
 ```
 
-A circuit that docingest could not read completely, or that has no exact OpenQASM 3 spelling (`U`, `R_k`, `iSWAP`, an unbound symbol), is refused with the reason, and the command exits 1. The other circuits are still written; add `--allow-partial` to keep exit 0. The full refusal list is in [ADR 0006](../packages/docingest/docs/adr/0006-openqasm-3-export.md#gate-mapping).
+A circuit that the simulator could not read completely, or that has no exact OpenQASM 3 spelling (`U`, `R_k`, `iSWAP`, an ambiguous box label, a drawn phase, `rxx`/`ryy`/`rzz`, an unbound symbol), is refused with the reason, and the command exits 1. The other circuits are still written; add `--allow-partial` to keep exit 0. Open controls are conjugated with `x`; `√X†` is written as `inv @ sx`; only `stdgates.inc` names are emitted. The full refusal list and gate mapping are in [ADR 0006](../packages/docingest/docs/adr/0006-openqasm-3-export.md#gate-mapping).
 
 To export in the same run that stores the papers, add `--qasm` to `ingest` or `crawl`. That step is best effort: a refusal or an unwritable folder is a warning, the papers stay stored, and the exit code is the ingestion's.
 

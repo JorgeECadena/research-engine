@@ -43,6 +43,7 @@ equal(cz_form, Circuit(2, [Op("x", (2,), controls=(1,))])).equal  # True
 | `validate(circuit)` | nothing, or the typed error that says why the circuit cannot be simulated |
 | `from_gate_list(document)` | a `Reading` (one `ParametricCircuit` per part of a `circuit/1` document) or a `RefusedError` that lists every reason |
 | `to_gate_list(circuit)` | the circuit as a `circuit/1` document; reading it back gives the same circuit |
+| `to_qasm(document, *, values=None, origin="")` | a `QasmExport`: the document read by `from_gate_list`, one OpenQASM 3 program per part, or the simulator's refusal reasons |
 | `run(request, ...)`, `check(request, ...)` | a JSON-ready result dict (`quantum-sim-result/1`); bad input is a result with `status` `"refused"`, never an exception |
 | `resolve_label(label)`, `parse_angle(text)` | a gate of the table with its angles, or a `LabelError` / `AngleError` with the reason |
 
@@ -135,7 +136,13 @@ quantum-sim reads what docingest's `gate_list(source).circuits[i].to_dict()` ret
 
 The test cannot call docingest: the lane that tests quantum-sim installs this package alone, and a test that imported both would pass on a workspace checkout and fail in CI. So the sources and the documents docingest makes from them are saved in `tests/fixtures/bridge/` (`NAME.tex` and `NAME.json`; [`tools/make_bridge_fixtures.py`](tools/make_bridge_fixtures.py) writes the second from the first, run where docingest is installed), and docingest has a test (`tests/unit/test_quantum_sim_fixtures.py`) that remakes each document from its source and compares. A change in docingest's output fails there until the fixtures are regenerated; a change in how quantum-sim reads them fails the bridge tests here. Add a circuit by adding its `.tex` file and running the script; a source that docingest must read as `partial` is named `partial_*.tex`.
 
-docingest can also write the same circuit as a program for a quantum SDK: `docingest circuits export` projects the stored circuit blocks onto OpenQASM 3, one program per part, with the drawn sign and provenance in comments ([ADR 0006](../docingest/docs/adr/0006-openqasm-3-export.md)). quantum-sim does not read QASM; the two paths share the reading of the drawing, not a format.
+## OpenQASM 3 export
+
+`to_qasm(document, *, values=None, origin="")` writes a `circuit/1` document as OpenQASM 3, one program per part, with the drawn sign and provenance in comments. It calls `from_gate_list` first, so the exporter and the simulator cannot disagree about a gate, a control, an angle or whether the document is a circuit at all: a document the simulator refuses is refused here, with the same reasons, and is never marked `"ok"`.
+
+Only gates that `stdgates.inc` defines are emitted. `sxdg` is written as `inv @ sx`; `rxx`, `ryy`, `rzz`, `rk` and `iswap` are refused until v1 has an exact standard spelling. An open control is conjugated with `x` before and after the operation, which is exact and keeps it from becoming a closed control. Parameters come from the simulator's `Angle` trees, so `R_z(\frac{1}{2}\pi)` becomes `rz((1/2)*pi)` rather than angle zero; a free symbol is refused unless the caller binds it with `values` (`"pi/4"` and `"\pi/4"` are both accepted). A `|1>` drawn at an input refuses the document: the export does not add an initialization the drawing did not state as an operation.
+
+`docingest circuits export` uses this function through a thin compatibility wrapper and writes the programs to `<output_dir>/qasm/` ([ADR 0006](../docingest/docs/adr/0006-openqasm-3-export.md)). The dependency is one-way: docingest imports quantum-sim, never the reverse. quantum-sim does not read QASM.
 
 The command `quantum-sim conventions` prints the conventions, the gate table and the limits as JSON.
 
@@ -173,10 +180,11 @@ Equality of two circuits of 11 to 20 wires applies both to 8 random states drawn
 | `angles.py` | `Angle`, `parse_angle`, `format_number`: the safe angle parser | `domain` |
 | `labels.py` | `resolve_label`, `label_of`, `SPELLINGS`: LaTeX gate label to a gate of the table, or a refusal | `domain`, `angles` |
 | `formats.py` | `from_gate_list`, `to_gate_list`, `ParametricCircuit`, `Reading`: the `circuit/1` reader and writer | `domain`, `angles`, `labels` |
+| `qasm.py` | `to_qasm`, `QasmExport`, `QasmProgram`: OpenQASM 3 text from a document read by `from_gate_list` | `formats`, `angles`, `domain` |
 | `api.py` | `run`, `check`, `refusal`: the result format | `domain`, `engine`, `formats`, `angles`, numpy |
 | `entrypoints.py` | the `quantum-sim` command | `api`, `domain` |
 
-Three import-linter contracts in `pyproject.toml` keep this layering (`entrypoints`, `api`, `formats`, then `engine` beside `labels`, then `gates` beside `angles`, then `domain`), keep numpy out of `domain`, `angles`, `labels` and `formats`, and forbid importing docingest, docingest-index, research_api or qa_bench. The reverse direction, docingest never importing `quantum_sim`, is a contract in docingest's `pyproject.toml`.
+The import-linter contracts in `pyproject.toml` keep this layering (`entrypoints`, `api`, `qasm`, `formats`, then `engine` beside `labels`, then `gates` beside `angles`, then `domain`), keep numpy out of `domain`, `angles`, `labels`, `formats` and `qasm`, and forbid importing docingest, docingest-index, research_api or qa_bench. docingest imports `quantum_sim.qasm` for its export; that one-way dependency is recorded in docingest's `pyproject.toml`.
 
 ## Tests and checks
 

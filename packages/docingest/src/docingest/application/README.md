@@ -1108,9 +1108,11 @@ uv run docingest index status
 
 `QasmExportService(store, out)` is a read path over the corpus: it finds the fenced `latex`
 blocks of each stored `document.md`, asks `domain.circuits.gate_list` for their circuits, and
-projects every circuit with `domain.qasm.to_qasm`. It writes the programs and changes nothing
-else. The store, the manifest and the cache key are untouched; a `.qasm` file that is lost can
-be made again from the Markdown.
+delegates every circuit to `domain.qasm.to_qasm`, which calls `quantum_sim.qasm.to_qasm`. The
+simulator's reader validates the `circuit/1` document before a line is written, so the service
+writes only programs the simulator accepts and reports the rest as refusals. It writes the
+programs and changes nothing else. The store, the manifest and the cache key are untouched; a
+`.qasm` file that is lost can be made again from the Markdown.
 
 | Name | Meaning |
 |---|---|
@@ -1118,16 +1120,17 @@ be made again from the Markdown.
 | `export_documents(documents, *, values=None, out=None)` | The same for documents a caller already holds, which is the post-ingest hook: it does not read the corpus and does not select. |
 | `values` | Binds a free gate parameter by canonical name (`theta` or `\theta`) to a LaTeX expression for every circuit of the call. |
 | `out` | Overrides the service's output directory for this call. The default is `<output_dir>/qasm`. |
-| `QasmExportReport` | `out`, `documents`, `circuits`, `files`, `refusals`, `warnings`, and the `ok` / `written` properties. `refusals` holds one line per circuit or part that could not be exported; `warnings` holds documents with no circuits and unreadable Markdown. |
+| `QasmExportReport` | `out`, `documents`, `circuits`, `files`, `refusals`, `warnings`, and the `ok` / `written` properties. `refusals` holds one line per circuit the simulator refused; `warnings` holds documents with no circuits and unreadable Markdown. |
 | `QasmFile` | `doc_id`, `source_name`, `block`, `circuit`, `part`, `sign`, `path`, `n_qubits`, `n_clbits`. |
 
 Each program is written to `<out>/<doc_id[:16]>-b<block:02d>-c<circuit:02d>-p<part:02d>.qasm`,
 where `block` is the 1-based fenced block of the document and `circuit` is the 1-based circuit
 inside that block. The application layer writes the file itself with the standard library
 (`Path.write_text`, UTF-8, LF); it does not use the store, because this output is derived and
-has no manifest. A refused part does not stop the others: the programs that could be made are
-written, and the report says why each refusal happened. A document with no fences, an empty
-corpus, or a Markdown file that cannot be read is a warning, not a refusal.
+has no manifest. A refused circuit does not stop the others: the programs that could be made are
+written, and the report says why each refusal happened. The simulator's reader is all-or-nothing
+for one document, so a refused circuit contributes no partially written parts. A document with no
+fences, an empty corpus, or a Markdown file that cannot be read is a warning, not a refusal.
 
 The CLI decides the exit code: `docingest circuits export` exits 1 when there is a refusal
 (unless `--allow-partial`) or when nothing was exported. A refusal in the post-ingest hook is

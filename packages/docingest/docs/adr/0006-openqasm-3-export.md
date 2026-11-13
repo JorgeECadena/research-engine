@@ -1,43 +1,52 @@
 # ADR 0006: Export a paper's circuits as OpenQASM 3
 
-**Status:** accepted, 2026-10-22
+**Status:** accepted, 2026-10-22; revised 2026-11-12 to put the emitter on quantum-sim's reader
 
 ## Context
 
-`gate_list(source)` already reads a circuit drawn in a paper's LaTeX and returns it as data:
+`gate_list(source)` reads a circuit drawn in a paper's LaTeX and returns it as data:
 `CircuitSteps`, with `GateOp` items, the sides of a drawn equality as parts, and wire 1 at the
 top. `CircuitSteps.to_dict()` is the `circuit/1` format that the separate
 [`quantum-sim`](../../../quantum-sim/README.md) package reads. That format is good for a
 simulator and for an agent, but it is not a program: it cannot be handed to a quantum SDK, a
 hardware provider or another tool.
 
-OpenQASM 3 is the portable text format for that job. Nothing in the repository emitted QASM
-before this decision. The exporter has to fit the existing layers: `docingest` may not import
-`quantum_sim` (an import-linter contract), so the QASM writer cannot live in the simulator, and
-the store keeps only `document.md` and `manifest.json`, so the export cannot change a document's
-cache identity.
+OpenQASM 3 is the portable text format for that job. The first version of this exporter lived in
+`docingest.domain.qasm` and interpreted labels, controls and angles itself. That duplicated the
+simulator's reader and let the two disagree: a circuit the simulator refused could be marked
+`"ok"`, an open control became a closed `cz`, `R_z(\frac{1}{2}\pi)` lost its angle, and the
+output used names such as `rzz` and `sxdg` that `stdgates.inc` does not define. The exporter is
+now downstream of the simulator's reader instead of beside it.
 
 ## Decision
 
-1. **A pure emitter in the domain.** `domain/qasm.py` projects one `CircuitSteps` onto OpenQASM 3
-   text with `to_qasm(circuit, *, values=None, origin="")`. It reads no LaTeX again: it uses the
-   same items `gate_list` produced, so the program and the gate list cannot disagree about a
-   wire. It owns no I/O and uses only the standard library.
-2. **One program per part.** A drawn equality has several sides; each side is a separate program,
-   and the drawn sign is written as `// sign: <sign>`. The first part has no sign. A part that
-   cannot be exported does not stop the others; the refusals are returned as data.
-3. **On-demand export, not ingest-time mutation.** `application/qasm.py` (`QasmExportService`)
-   reads stored documents, finds their fenced `latex` blocks, emits the circuits and writes the
-   files. `docingest circuits export` drives it. `ingest --qasm` and `crawl --qasm` are optional
-   hooks that run it on the documents a run just stored, best effort, after the store is written.
-   No manifest, cache key or store layout changes: the output can always be made again from
-   `document.md`.
-4. **Output directory.** The files go to `<output_dir>/qasm/` by default, or to `--out DIR`. That
+1. **The simulator owns the emitter.** `quantum_sim.qasm.to_qasm(document, *, values=None,
+   origin="")` takes a `circuit/1` document, calls
+   `quantum_sim.formats.from_gate_list(document)`, and writes only what that reader accepted. It
+   does not read LaTeX again and does not interpret a gate, a control or an angle on its own. A
+   document the simulator refuses is refused here, with the simulator's reasons.
+2. **The dependency is one-way.** `docingest` depends on `quantum-sim`; `quantum-sim` never
+   imports `docingest`. The import-linter contract that forbade the dependency is narrowed to
+   `research_api` and `qa_bench`. `docingest.domain.qasm` remains as a thin compatibility wrapper
+   that takes a `CircuitSteps` and delegates with `circuit.to_dict()`, so the web adapter and the
+   existing service keep their import path.
+3. **One program per part, all-or-nothing per document.** A drawn equality has several sides;
+   each side is a separate program, and the drawn sign is written as `// sign: <sign>`. The first
+   part has no sign. The simulator's reader is all-or-nothing: if it refuses one part, the whole
+   document is refused and no program is marked `"ok"`. `QasmExportService` still writes the
+   other documents and circuits in the same run, and reports every refusal.
+4. **On-demand export, not ingest-time mutation.** `application/qasm.py` (`QasmExportService`)
+   reads stored documents, finds their fenced `latex` blocks, delegates each circuit to the
+   wrapper and writes the files. `docingest circuits export` drives it. `ingest --qasm` and
+   `crawl --qasm` are optional hooks that run it on the documents a run just stored, best effort,
+   after the store is written. No manifest, cache key or store layout changes: the output can
+   always be made again from `document.md`.
+5. **Output directory.** The files go to `<output_dir>/qasm/` by default, or to `--out DIR`. That
    directory is a sibling of the document folders, so `DocumentStore.corpus()` ignores it: it has
    no `manifest.json`. A file is named
    `<doc_id[:16]>-b<block:02d>-c<circuit:02d>-p<part:02d>.qasm`, where the block and circuit are
    1-based positions in the Markdown.
-5. **Deterministic text.** UTF-8, LF line endings, one trailing newline, no timestamps, no
+6. **Deterministic text.** UTF-8, LF line endings, one trailing newline, no timestamps, no
    absolute paths. The same document and options give byte-identical files.
 
 ## Output contract
@@ -64,37 +73,43 @@ per qubit and writes `measure q[i] -> c[i];`; no other item allocates a bit.
 
 | Drawing | OpenQASM 3 |
 |---|---|
-| one-qubit `gate`: `I`/`id`, `H`, `X`/`NOT`, `Y`, `Z`, `S`, `S†`, `T`, `T†`, `√X`, `√X†` | `id`, `h`, `x`, `y`, `z`, `s`, `sdg`, `t`, `tdg`, `sx`, `sxdg` |
+| one-qubit `gate`: `I`/`id`, `H`, `X`/`NOT`, `Y`, `Z`, `S`, `S†`, `T`, `T†`, `√X` | `id`, `h`, `x`, `y`, `z`, `s`, `sdg`, `t`, `tdg`, `sx` |
+| `√X†` | `inv @ sx`; `stdgates.inc` has no `sxdg` |
 | one-qubit `gate` with an angle: `R_x`, `R_y`, `R_z`, `P`/`Phase`/`U1` | `rx`, `ry`, `rz`, `p` |
-| two-qubit `gate` with an angle: `R_xx`, `R_yy`, `R_zz` | `rxx`, `ryy`, `rzz` |
-| `swap`, and `dots_gate` whose label is `SWAP` | `swap` |
+| `swap`, and an `x` item on a control and a target | `swap`, `cx` |
 | `x` (X on a target) | `x`; closed controls become `cx`, `ccx`, or `ctrl @ ... @ x` |
 | `z_dots` | `cz` for two dots, otherwise a controlled `z` |
-| `phase` | `p(angle)` |
 | closed control | a `\|1>` control; one control uses `cx`/`cz`/`cswap`, two use `ccx` for X, more use `ctrl @ ... @` |
 | open control | `x` on the control before and after the operation; exact for every gate |
 | `measure` | `measure q[i] -> c[i];` |
-| `barrier` | `barrier q[i], ...;`, or `barrier q;` with no wires |
-| `text`, `sign` | an empty item or `\ket{0}` is skipped; any other text, and a sign with a label, is refused |
-| a `\ket{1}` drawn at the input | refused: the export does not add an initialization the drawing did not state as an operation |
+| `barrier` | nothing: the simulator's reader treats it as a non-operation |
+| `text` | `\|0>` is an input marker; `\|1>` at an input refuses the document; any other text is refused |
+| `sign` | refused: a sign drawn on a wire is not an operation |
 
-Parameters are a closed LaTeX arithmetic subset: numbers, `\pi`, `+ - * /`, parentheses,
-`\frac{a}{b}`, `\sqrt{a}` and Greek symbols. A free symbol is refused unless the caller binds it
-with `values` / `--set`; nothing is evaluated to a rounded decimal, and `^` is refused.
+Gates the simulator knows but `stdgates.inc` does not define are refused until v1 has an exact
+standard spelling: `rxx`, `ryy`, `rzz`, `rk` and `iswap`. A controlled standard gate is written
+with its standard controlled name where one exists (`cx`, `cy`, `cz`, `ch`, `cp`, `crx`, `cry`,
+`crz`, `cswap`, `ccx`), and as `ctrl @ ...` otherwise.
 
-Refused as a whole part, never skipped: a circuit whose `status` is not `"parsed"`, an
-`unparsed*` item, `control`, `dots`, `discard`, an unknown kind, a `classical` item, a wire outside
-the circuit or named twice in one item, a gate and its wire count that disagree, a one-qubit gate
-on several targets when it also has controls, a box label whose controls are not in the drawing
-(`CNOT`, `CX`, `CCX`, `Toffoli`, ...), `U`/`U2`/`U3`, `R_k` and `iSWAP` (no exact `stdgates.inc`
-form). A one-qubit gate on several targets without controls is the same gate on each wire, as the
-data contract says.
+Parameters are the simulator's angle trees, so the program says what the drawing said. A free
+symbol is refused unless the caller binds it with `values` / `--set`; nothing is evaluated to a
+rounded decimal. `R_z(\frac{1}{2}\pi)` becomes `rz((1/2)*pi)`, not angle zero. A binding may be
+written as `pi/4` or `\pi/4`.
+
+Refused as a whole document, never skipped: a circuit whose `status` is not `"parsed"`, an
+`unparsed*` item, `phase`, `dots`, `dots_gate`, `discard`, `control`, `sign`, an unknown kind, a
+`classical` item, a wire outside the circuit or named twice in one item, a gate and its wire count
+that disagree, an ambiguous box label (`CNOT`, `U`, `R_k`, ...), a one-qubit box drawn over
+several wires, `rxx`/`ryy`/`rzz`, and an input drawn as `|1>`.
 
 ## Consequences
 
-- `openqasm3[parser]` is a development dependency only. Every golden program and a seeded set of
-  generated programs are parsed in `tests/contract/test_qasm_contracts.py`; the package itself
-  does not depend on the parser.
+- `openqasm3[parser]` is a development dependency of `quantum-sim` only. Every golden program and
+  a seeded property test are parsed in `packages/quantum-sim/tests/test_qasm_contracts.py`; neither
+  package depends on the parser at runtime.
+- `docingest` now depends on `quantum-sim`. The dependency is one-way and the import-linter
+  contract records it. The alternative, a second reader in docingest, is what let the two
+  disagree.
 - The export is read-only with respect to the store. Cached results do not change, and a document
   that is re-ingested keeps its cache identity. Removing or editing a `.qasm` file costs only a
   re-export.
@@ -111,11 +126,13 @@ data contract says.
 
 ## Alternatives considered
 
+- **Keep the emitter in docingest with its own reader.** Rejected: it duplicated the simulator's
+  label, angle and control rules and exported programs the simulator refused or misread.
+- **Put the emitter in quantum-sim but leave docingest independent.** Rejected: two consumers
+  would have to reproduce the `circuit/1` bridge, and the web adapter would need a third path.
 - **Write the files during ingest** next to `document.md`. Rejected: the store would gain files it
   did not have, the cache key would have to cover them, and a failure would make an otherwise good
   ingestion look failed.
-- **Put the emitter in `quantum-sim`.** Rejected: docingest may not import the simulator, and the
-  simulator's job is to read `circuit/1`, not to write a second format.
 - **Export only `circuit/1` JSON.** Rejected: the format is useful for the simulator but is not a
   program for an SDK or a provider.
 - **Depend on Qiskit to write QASM.** Rejected for the same reason the simulator is not a

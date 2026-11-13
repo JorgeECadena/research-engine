@@ -402,7 +402,12 @@ def _two_circuits(envelope: dict[str, Any]) -> tuple[Reading, list[str]]:
     for name, reading in (("a", first), ("b", second)):
         if len(reading.circuits) != 1:
             raise _Refuse(f"{name}: give one circuit without a drawn equality")
-    merged = Reading((first.circuits[0], second.circuits[0]), ("=",), first.notes + second.notes)
+    merged = Reading(
+        (first.circuits[0], second.circuits[0]),
+        ("=",),
+        first.notes + second.notes,
+        first.input_kets + second.input_kets,
+    )
     return merged, ["a", "b"]
 
 

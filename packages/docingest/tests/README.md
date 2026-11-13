@@ -83,6 +83,10 @@ flowchart LR
 
 ## Test modules
 
+The OpenQASM 3 emitter's unit tests, golden fixtures and contract/property tests live in
+`packages/quantum-sim/tests/` (`test_qasm.py`, `test_qasm_contracts.py`, `fixtures/qasm/`), because
+the emitter itself lives in `quantum-sim`. This package tests only the wrapper and the service.
+
 ### unit/
 
 | Module | Covers |
@@ -131,9 +135,8 @@ flowchart LR
 | `test_timing.py` | `tests/timing.py` on a fake clock: linear work passes after three rounds, quadratic work fails all three attempts, a burst of load in one attempt or one round is not held against the code, the floor and the ceiling, the collector switched off and back, `timeout_notes` |
 | `test_text.py` | `domain.text`: garbled-text detection, the math-symbol and equals-sign counts (the edges of every symbol block, `ϕ`, `ˆ`, `™`), de-hyphenation, page splitting |
 | `test_structure.py` | `domain.structure`, `furniture` and `headings` on synthetic lines: running headers and page numbers, paragraphs, hyphenation, headings, footnotes |
-| `test_qasm.py` | `domain.qasm.to_qasm`: exact programs for each gate, control, open control, measurement, barrier, parameter and sign; the header, origin and part suffix; `values` bindings; and every refusal (an unparsed circuit, an unknown kind, an out-of-range wire, an unbound symbol, `U`, `R_k`, `iSWAP`, a controlled measurement) |
-| `test_qasm_export.py` | `QasmExportService`: selection by id prefix, source name and ambiguity; file naming and content; `--set`; refusals that do not stop the other circuits; warnings for no circuits and an unreadable Markdown; the output override; and the `export_documents` path the post-ingest hook uses |
-| `test_quantum_sim_fixtures.py` | The `circuit/1` documents saved in `packages/quantum-sim/tests/fixtures/bridge/` are what `gate_list` returns for the LaTeX sources next to them (the other half of quantum-sim's bridge tests; docingest never imports `quantum_sim`), and an unknown command or a text token put in any of those sources is never read as `parsed` |
+| `test_qasm_export.py` | `QasmExportService`: selection by id prefix, source name and ambiguity; file naming and content; `--set`; open-control conjugation; refusals that do not stop the other circuits; a simulator-refused ambiguous gate and a gate with no standard spelling (both write nothing); warnings for no circuits and an unreadable Markdown; the output override; and the `export_documents` path the post-ingest hook uses |
+| `test_quantum_sim_fixtures.py` | The `circuit/1` documents saved in `packages/quantum-sim/tests/fixtures/bridge/` are what `gate_list` returns for the LaTeX sources next to them (the other half of quantum-sim's bridge tests), and an unknown command or a text token put in any of those sources is never read as `parsed` |
 | `test_wire_names.py` | docingest's copy of quantum-sim's wire-name grammar (`_WIRE_NAME`) gives the same verdict as quantum-sim on every sample of `packages/quantum-sim/tests/fixtures/wire_names.json`; a word in `\text` or `\mathrm` is never a name |
 
 ### contract/
@@ -143,7 +146,6 @@ flowchart LR
 | `test_ocr_contract.py` | `FakeOcr`, `OpenAICompatibleOcr` against a local stub `/v1/chat/completions` server, `MlxVlmOcr` with a pinned Qwen3-VL-2B 4-bit model (`model` marker) |
 | `test_retrieval_contract.py` | `FakeEmbedder`, `FakeIndex` and `FakeReranker` (from `fakes.py`): the `Embedder`, `ChunkIndex` and `Reranker` contracts. The [`docingest-index`](../../docingest-index/README.md) package imports this module and runs it against its real adapters (see [Plugin tests](#plugin-tests-reusing-the-contracts)) |
 | `test_store_contract.py` | `InMemoryStore` (from `fakes.py`) and `FilesystemStore` |
-| `test_qasm_contracts.py` | The golden `circuit/1` fixtures and their exact `.qasm` programs: each parses with `openqasm3`, the text is UTF-8/LF and deterministic, every `GateOp.kind` is handled or refused, the emitter imports only the standard library, and a seeded property test parses the programs of generated circuits |
 
 ### integration/
 
@@ -184,7 +186,6 @@ flowchart LR
 | `bench/olmocr_subset/` | `subset.json` (dataset `repo_id`, `revision`, `categories`, `per_category`, `seed`, and SHA-256 checksums of the JSONL files and of the selected PDFs) and one `.jsonl` test file per category; the PDFs themselves are not included | `test_bench_datasets.py` |
 | `bench/scorer_stdout.txt` | Recorded output of the official olmOCR-bench scorer | `test_bench_datasets.py` (`parse_scorer_stdout`) |
 | `latex/paper/` | A multi-file paper with the traps seen in arXiv sources: a latin-1 include, a file that includes itself, a local `.sty` whose layout macro makes pandoc loop, a natbib `.bbl`, a commented-out include, verbatim code | `test_pandoc_latex.py` |
-| `qasm/` | Four `circuit/1` documents (`bell`, `open-control`, `measure`, `parts`) and the exact OpenQASM 3 program the emitter must write for each; `parts` has two files, one per side of a drawn equality | `test_qasm_contracts.py` |
 | `latex/revtex/` | An invented paper with a REVTeX-style `.bbl`: `@` helper macros, `\href` with a line break, `\href@noop`, `\Eprint`, and citation keys with an empty entry and a `$` | `test_pandoc_latex.py` |
 | `latex/malformed.tex` | Unclosed group and `itemize`, for the fallback path | `test_pandoc_latex.py` |
 

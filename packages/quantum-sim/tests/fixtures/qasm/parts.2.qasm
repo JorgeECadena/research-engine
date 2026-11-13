@@ -2,7 +2,7 @@
 // source: parts.tex, block 1, circuit 1, part 2/2
 // sign: =
 // wire 1 (top of the drawing) = q[0]; OpenQASM fixes no bit order
-// wires: 1 = \ket{q_0}
+// wires: 1 = q_0
 OPENQASM 3.0;
 include "stdgates.inc";
 qubit[1] q;

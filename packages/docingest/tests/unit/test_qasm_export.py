@@ -17,6 +17,9 @@ def quantikz(*rows: str) -> str:
 H = quantikz("& \\gate{H} & \\qw")
 CNOT = quantikz("& \\ctrl{1} & \\qw", "& \\targ{} & \\qw")
 THETA = quantikz("& \\gate{R_y(\\theta)} & \\qw")
+OPEN_CONTROL = quantikz("& \\octrl{1} & \\qw", "& \\gate{X} & \\qw")
+AMBIGUOUS_U = quantikz("& \\gate{U} & \\qw")
+RZZ = quantikz("\\gate[2]{R_{zz}(0.5)} & \\qw", "& \\qw")
 
 
 def document(store, doc_id: str, *circuits: str, name: str = "a.md"):
@@ -126,6 +129,40 @@ def test_a_refused_circuit_does_not_stop_the_others(tmp_path):
     assert len(report.refusals) == 1
     assert "block 2, circuit 1" in report.refusals[0]
     assert "unbound parameter" in report.refusals[0]
+
+
+def test_an_open_control_is_conjugated_with_x(tmp_path):
+    store = InMemoryStore()
+    document(store, "a" * 64, OPEN_CONTROL)
+    report = export(store, tmp_path / "qasm")
+
+    assert report.ok
+    text = report.files[0].path.read_text()
+    assert "x q[0];\ncx q[0], q[1];\nx q[0];" in text
+
+
+def test_an_ambiguous_gate_the_simulator_refuses_is_not_written(tmp_path):
+    store = InMemoryStore()
+    document(store, "a" * 64, AMBIGUOUS_U)
+    out = tmp_path / "qasm"
+    report = export(store, out)
+
+    assert not report.ok
+    assert report.files == () and report.written == 0
+    assert "unknown gate label 'U'" in report.refusals[0]
+    assert not out.exists()
+
+
+def test_a_gate_without_a_standard_spelling_is_refused(tmp_path):
+    store = InMemoryStore()
+    document(store, "a" * 64, RZZ)
+    out = tmp_path / "qasm"
+    report = export(store, out)
+
+    assert not report.ok
+    assert report.files == () and report.written == 0
+    assert "stdgates.inc has no rzz" in report.refusals[0]
+    assert not out.exists()
 
 
 def test_set_binds_a_free_parameter(tmp_path):

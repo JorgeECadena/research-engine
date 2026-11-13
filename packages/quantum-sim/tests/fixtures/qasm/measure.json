@@ -3,15 +3,19 @@
   "kind": "quantikz",
   "status": "parsed",
   "label": "",
-  "wires": 2,
-  "wire_labels": ["1 = \\ket{a}", "2 = \\ket{b}"],
+  "wires": 1,
+  "wire_labels": [
+    "1 = q_0"
+  ],
   "parts": [
     [
       [
         {
           "kind": "gate",
           "label": "H",
-          "targets": [1],
+          "targets": [
+            1
+          ],
           "controls": [],
           "open_controls": [],
           "classical": false,
@@ -20,10 +24,12 @@
       ],
       [
         {
-          "kind": "x",
-          "label": "X",
-          "targets": [2],
-          "controls": [1],
+          "kind": "measure",
+          "label": "",
+          "targets": [
+            1
+          ],
+          "controls": [],
           "open_controls": [],
           "classical": false,
           "source": ""

@@ -1,6 +1,6 @@
 [project]
 name = "docingest"
-version = "0.5.0"
+version = "0.4.1"
 description = "Normalize any research document (PDF, scanned PDF, images, office) into Markdown + provenance manifest, with local Qwen-VL OCR on MLX"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
@@ -17,9 +17,13 @@ dependencies = [
     "pylatexenc>=2.11",
     "pypandoc-binary>=1.17",
     "pypdfium2>=5.13",
+    "quantum-sim",
     "rich>=15.0.0",
     "typer>=0.19",
 ]
+
+[tool.uv.sources]
+quantum-sim = { workspace = true }
 
 [project.scripts]
 docingest = "docingest.entrypoints.cli:app"
@@ -46,7 +50,6 @@ dev = [
     "hypothesis>=6.168",
     "import-linter>=2.15",
     "matplotlib>=3.10",
-    "openqasm3[parser]>=0.5,<1",
     "pyright>=1.1.414",
     "pytest>=9.1.1",
     "pytest-cov>=7",
@@ -157,10 +160,14 @@ source_modules = ["docingest"]
 forbidden_modules = ["docingest_index"]
 
 [[tool.importlinter.contracts]]
-name = "docingest never imports quantum_sim, research_api or qa_bench (separate packages)"
+name = "docingest imports quantum_sim only for the QASM export; research_api and qa_bench stay separate"
 type = "forbidden"
 source_modules = ["docingest"]
-forbidden_modules = ["quantum_sim", "research_api", "qa_bench"]
+forbidden_modules = ["research_api", "qa_bench"]
+
+# The QASM export deliberately uses quantum-sim's circuit/1 reader: docingest writes the drawing
+# as data, the simulator decides whether that data is a circuit. quantum_sim never imports
+# docingest, so the dependency stays one-way.
 
 [[tool.importlinter.contracts]]
 name = "Only the composition root and entrypoints wire concrete adapters"
