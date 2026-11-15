@@ -136,17 +136,18 @@ Consequences of the rule that are visible in the code:
 
 ## 4. Import contracts
 
-The layering is enforced by seven import-linter contracts in `[tool.importlinter]` of `pyproject.toml`. They run with `uv run lint-imports`, which is part of `scripts/check.sh` and of the Linux job in `.github/workflows/ci.yml`.
+The layering is enforced by eight import-linter contracts in `[tool.importlinter]` of `pyproject.toml`. They run with `uv run lint-imports`, which is part of `scripts/check.sh` and of the Linux job in `.github/workflows/ci.yml`.
 
 | # | Contract name | Type | What it enforces |
 |---|---|---|---|
 | 1 | Hexagonal layers: outer layers may import inner ones, never the reverse | `layers` | The order `entrypoints`, `bootstrap`, `adapters`, `config`, `application`, `ports`, `domain`. A module may import its own layer and the layers listed after it, never a layer listed before it. |
-| 2 | Adapters are independent of each other (shared HF resolver excepted) | `independence` | None of `adapters.detection`, `pdf`, `ocr`, `images`, `converters`, `store`, `sources`, `qa`, `retrieval`, `datasets` imports another. `adapters.models` is deliberately not in the list, so `ocr.mlx_vlm` and `qa.paperqa` can share `models.huggingface.resolve`. |
+| 2 | Adapters are independent of each other (shared HF resolver excepted) | `independence` | None of `adapters.detection`, `pdf`, `ocr`, `images`, `converters`, `store`, `sources`, `qa`, `retrieval`, `datasets`, `qasm` imports another. `adapters.models` is deliberately not in the list, so `ocr.mlx_vlm` and `qa.paperqa` can share `models.huggingface.resolve`. |
 | 3 | Domain is pure: no I/O or framework libraries | `forbidden` | `docingest.domain` may not import `pypdfium2`, `PIL`, `numpy`, `mlx`, `mlx_vlm`, `paperqa`, `docling`, `pypandoc`, `huggingface_hub`, `httpx`, `urllib`, `typer`, `rich`, `jiwer`, `quantum_sim`. The QASM exporter is behind the `CircuitExporter` port, so the domain does not import quantum-sim (ADR 0006). |
-| 4 | Application depends on ports, not on concrete libraries | `forbidden` | `docingest.application` and `docingest.ports` may not import `pypdfium2`, `mlx`, `mlx_vlm`, `paperqa`, `docling`, `pypandoc`, `huggingface_hub`, `httpx`, `typer`, `rich`. |
+| 4 | Application depends on ports, not on concrete libraries | `forbidden` | `docingest.application` and `docingest.ports` may not import `pypdfium2`, `mlx`, `mlx_vlm`, `paperqa`, `docling`, `pypandoc`, `huggingface_hub`, `httpx`, `typer`, `rich`, `quantum_sim`. |
 | 5 | docingest never imports a plugin package (plugins are found by entry point) | `forbidden` | `docingest` may not import `docingest_index`. The plugin package has a contract of its own, in its `pyproject.toml`: it may import only `docingest.ports`, `docingest.domain` and `docingest.config`. |
 | 6 | Only the composition root and entrypoints wire concrete adapters | `protected` | Only `docingest.bootstrap`, `docingest.entrypoints` and the adapters themselves may import `docingest.adapters`. |
-| 7 | docingest imports quantum_sim only for the QASM export; research_api and qa_bench stay separate | `forbidden` | `docingest` may not import `research_api` (the HTTP API) or `qa_bench` (the benchmark package). The QASM export reaches `quantum_sim.qasm` through the `CircuitExporter` adapter, which the bootstrap imports lazily; the dependency is one-way, because quantum-sim never imports docingest (see [ADR 0005](adr/0005-own-numpy-circuit-simulator.md) and [ADR 0006](adr/0006-openqasm-3-export.md)). |
+| 7 | docingest never imports research_api or qa_bench (separate packages) | `forbidden` | `docingest` may not import `research_api` (the HTTP API) or `qa_bench` (the benchmark package). Those packages have the reverse contracts in their own `pyproject.toml`. |
+| 8 | Only the QASM adapter imports quantum_sim | `forbidden` | No module of `docingest` imports `quantum_sim` except `docingest.adapters.qasm` (the one ignored import, `docingest.adapters.qasm -> quantum_sim`; `allow_indirect_imports = true`, since `bootstrap` reaches it through the adapter, lazily). The domain and the application see only the `CircuitExporter` port, and the dependency is one-way, because quantum-sim never imports docingest (see [ADR 0005](adr/0005-own-numpy-circuit-simulator.md) and [ADR 0006](adr/0006-openqasm-3-export.md)). |
 
 Global settings that matter:
 

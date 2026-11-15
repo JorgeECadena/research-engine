@@ -43,7 +43,7 @@ equal(cz_form, Circuit(2, [Op("x", (2,), controls=(1,))])).equal  # True
 | `validate(circuit)` | nothing, or the typed error that says why the circuit cannot be simulated |
 | `from_gate_list(document)` | a `Reading` (one `ParametricCircuit` per part of a `circuit/1` document) or a `RefusedError` that lists every reason |
 | `to_gate_list(circuit)` | the circuit as a `circuit/1` document; reading it back gives the same circuit |
-| `to_qasm(document, *, values=None, origin="", tool="quantum-sim")` | a `QasmExport`: the document read by `from_gate_list`, one OpenQASM 3 program per part, or the simulator's refusal reasons; `tool` names the caller in the generated-by header |
+| `to_qasm(document, *, values=None, origin="", tool="quantum-sim")` | a `QasmExport`: the document read by `from_gate_list`, one OpenQASM 3 program per part, or the simulator's refusal reasons; `tool` names the caller in the generated-by header (from `quantum_sim.qasm`, also `validate_bindings(values)`) |
 | `run(request, ...)`, `check(request, ...)` | a JSON-ready result dict (`quantum-sim-result/1`); bad input is a result with `status` `"refused"`, never an exception |
 | `resolve_label(label)`, `parse_angle(text)` | a gate of the table with its angles, or a `LabelError` / `AngleError` with the reason |
 
@@ -142,9 +142,15 @@ The test cannot call docingest: the lane that tests quantum-sim installs this pa
 
 `to_qasm(document, *, values=None, origin="", tool="quantum-sim")` writes a `circuit/1` document as OpenQASM 3, one program per part, with the drawn sign and provenance in comments. It calls `from_gate_list` first, so the exporter and the simulator cannot disagree about a gate, a control, an angle or whether the document is a circuit at all: a document the simulator refuses is refused here, with the same reasons, and is never marked `"ok"`.
 
-Only gates that `stdgates.inc` defines are emitted. `sxdg` is written as `inv @ sx`; `rxx`, `ryy`, `rzz`, `rk` and `iswap` are refused until v1 has an exact standard spelling. An open control is conjugated with `x` before and after the operation, which is exact and keeps it from becoming a closed control. Parameters come from the simulator's `Angle` trees, so `R_z(\frac{1}{2}\pi)` becomes `rz((1.0/2.0)*pi)` rather than angle zero, and every number is a float literal; a free symbol is refused unless the caller binds it with `values` (`"pi/4"` and `"\pi/4"` are both accepted). A `|1>` drawn at an input refuses the document: the export does not add an initialization the drawing did not state as an operation.
+Only gates that `stdgates.inc` defines are emitted. `sxdg` is written as `inv @ sx`; `rxx`, `ryy`, `rzz`, `rk` and `iswap` are refused in qasm format 1, because `stdgates.inc` has no exact spelling for them (an exact decomposition would be a later decision, see ADR 0006). An open control is conjugated with `x` before and after the operation, which is exact and keeps it from becoming a closed control. Parameters come from the simulator's `Angle` trees, so `R_z(\frac{1}{2}\pi)` becomes `rz((1.0/2.0)*pi)` rather than angle zero, and every number is a float literal; a free symbol is refused unless the caller binds it with `values` (`"pi/4"` and `"\pi/4"` are both accepted). A bound angle is evaluated as the simulator evaluates it, and one that is undefined at the bound values (`\frac{\pi}{\theta}` with `theta=0`, a negative square root, a power that overflows) refuses the part with the simulator's reason. A `|1>` drawn at an input refuses the document: the export does not add an initialization the drawing did not state as an operation.
+
+A binding name is canonical: `theta`, `\theta` and `{\theta}` are `theta`, and `\theta_{1}` is `theta_1`, the name the angle grammar gives the symbol. `validate_bindings(values)` raises `ValueError` for a name bound twice in two spellings, an empty name, `True` or `False`, a value with a free symbol or an integer too large for a float, so a caller can reject a bad binding before it exports anything. `QasmExport.unmatched` lists the keys, as given, that name no symbol of the document. A `// bound: name = value` line appears only in the programs of the parts that use the symbol, under the reader's name; comments never hold a line break.
+
+Wire `i` (1 at the top) is `q[i-1]`, and a measurement writes `c[i-1]`. OpenQASM 3 reads a bit register as `c[n-1] ... c[0]`, so in a printed value of `c` wire 1 is the rightmost bit, while this package's basis labels put wire 1 first. A program that measures says so in two header lines, next to `bit[n] c;`; a program without a measurement has neither.
 
 `docingest circuits export` uses this function through its `CircuitExporter` adapter and writes the programs to `<output_dir>/qasm/` ([ADR 0006](../docingest/docs/adr/0006-openqasm-3-export.md)). The dependency is one-way: docingest imports quantum-sim, never the reverse. quantum-sim does not read QASM.
+
+The golden fixtures in `tests/fixtures/qasm/` are `NAME.json` (a `circuit/1` document) with `NAME.qasm` (one part) or `NAME.1.qasm`, `NAME.2.qasm`, ... (one file per part); `tests/fixtures/qasm/refused/` holds `NAME.json` with `NAME.reason`, one expected reason per line. `test_qasm_contracts.py` pins the stems (`bell`, `measure`, `open-control`, `parts`; refused: `bundle`, `legend-one`, `output-ket`): a new fixture is added to that list too.
 
 The command `quantum-sim conventions` prints the conventions, the gate table and the limits as JSON.
 
@@ -182,7 +188,7 @@ Equality of two circuits of 11 to 20 wires applies both to 8 random states drawn
 | `angles.py` | `Angle`, `parse_angle`, `format_number`: the safe angle parser | `domain` |
 | `labels.py` | `resolve_label`, `label_of`, `SPELLINGS`: LaTeX gate label to a gate of the table, or a refusal | `domain`, `angles` |
 | `formats.py` | `from_gate_list`, `to_gate_list`, `ParametricCircuit`, `Reading`: the `circuit/1` reader and writer | `domain`, `angles`, `labels` |
-| `qasm.py` | `to_qasm`, `QasmExport`, `QasmProgram`: OpenQASM 3 text from a document read by `from_gate_list` | `formats`, `angles`, `domain` |
+| `qasm.py` | `to_qasm`, `validate_bindings`, `QasmExport`, `QasmProgram`: OpenQASM 3 text from a document read by `from_gate_list` | `formats`, `angles`, `domain` |
 | `api.py` | `run`, `check`, `refusal`: the result format | `domain`, `engine`, `formats`, `angles`, numpy |
 | `entrypoints.py` | the `quantum-sim` command | `api`, `domain` |
 
@@ -223,8 +229,8 @@ Beside the acceptance suite:
 | `test_bridge.py` | LaTeX source to unitary through docingest's saved documents, against matrices written by hand |
 | `test_wire_names.py` | the wire-name grammar against `fixtures/wire_names.json`, the sample list that docingest's copy of the grammar is tested on too, so the two cannot drift |
 | `test_basis_kets.py` | the grammar of a basis ket (`\ket{0}`, `\ket{1}`) against `fixtures/basis_kets.json`, the sample list that docingest's copy, which decides which text it leaves on a wire, is tested on too |
-| `test_qasm.py` | the OpenQASM 3 exporter: gate mapping, open controls, angles as expressions and every number as a float literal, bindings, refusals, the header and its wire/classical-bit comments, `|1>` inputs, the property test that no emitted parameter holds an integer literal |
-| `test_qasm_contracts.py` | the exporter's contract against goldens in `tests/fixtures/qasm/`: every emitted gate is in `stdgates.inc`, every golden parses with `openqasm3`, the wire and classical-bit conventions, refused fixtures and their reasons, and a deterministic property test over random circuits |
+| `test_qasm.py` | the OpenQASM 3 exporter: gate mapping, open controls, angles as expressions and every number as a float literal, bindings (canonical names, a name bound twice, values the emitter refuses, angles undefined at the bound values, the `// bound:` lines of each part), refusals, the header and its wire/classical-bit comments, line breaks kept out of comments, `\|1>` inputs, the property test that no emitted parameter holds an integer literal |
+| `test_qasm_contracts.py` | the exporter's contract against goldens in `tests/fixtures/qasm/`: every emitted gate is in `stdgates.inc`, every golden parses with `openqasm3`, the wire and classical-bit conventions, refused fixtures and their reasons, the exact sets of golden and refused stems (so an emptied or renamed folder fails), and a deterministic property test over random circuits |
 | `test_domain.py`, `test_packaging.py` | the domain types; numpy as the only dependency; every gate and every label spelling documented in `docs/conventions.md` |
 
 ## The reference fixture

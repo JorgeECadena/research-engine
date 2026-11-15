@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import stat
 from pathlib import Path
 
 import pytest
+from builders import one_line
 from fakes import record
 from typer.testing import CliRunner
 
@@ -112,13 +114,28 @@ def test_a_malformed_set_is_a_usage_error(setup):
 
     missing = runner.invoke(app, ["circuits", "export", "--config", str(cfg), "--set", "theta"])
     assert missing.exit_code == 2
-    assert "--set expects NAME=VALUE" in missing.output
+    assert "--set expects NAME=VALUE" in one_line(missing.output)
 
     repeated = runner.invoke(
         app, ["circuits", "export", "--config", str(cfg), "--set", "theta=1", "--set", "theta=2"]
     )
     assert repeated.exit_code == 2
-    assert "twice" in repeated.output
+    assert "--set names 'theta' twice" in one_line(repeated.output)
+
+
+def test_a_name_bound_twice_in_two_spellings_is_a_usage_error(setup):
+    runner, cfg, raw, out = setup
+    (raw / "theta.md").write_text(markdown(THETA))
+    assert ingest(runner, cfg, raw).exit_code == 0
+
+    result = runner.invoke(
+        app,
+        ["circuits", "export", "--config", str(cfg), "--set", "theta=1", "--set", "\\theta=2"],
+    )
+
+    assert result.exit_code == 2
+    assert "parameter 'theta' is bound twice" in one_line(result.output)
+    assert exported(out) == []
 
 
 def test_a_bad_set_value_fails_once_before_writing_any_circuit(setup):
@@ -131,7 +148,7 @@ def test_a_bad_set_value_fails_once_before_writing_any_circuit(setup):
     )
 
     assert result.exit_code == 2
-    assert "value for 'theta'" in result.output
+    assert "value for 'theta'" in one_line(result.output)
     assert exported(out) == []
 
 
@@ -156,6 +173,7 @@ def test_an_empty_corpus_exits_one(setup):
     result = runner.invoke(app, ["circuits", "export", "--config", str(cfg)])
 
     assert result.exit_code == 1
+    assert "warning: no stored documents: ingest a paper first" in one_line(result.output)
     assert "wrote 0 program(s)" in result.output
     assert not (out / "qasm").exists()
 
@@ -208,6 +226,28 @@ def test_ingest_qasm_writes_the_circuits_after_the_store(setup):
     [path] = exported(out)
     assert "h q[0];" in path.read_text()
     assert "qasm: wrote 1 program(s)" in result.output
+
+
+def test_ingest_qasm_exports_identical_files_once(setup):
+    runner, cfg, raw, out = setup
+    (raw / "one.md").write_text(markdown(H))
+    (raw / "two.md").write_text(markdown(H))
+
+    result = ingest(runner, cfg, raw, "--qasm")
+
+    assert result.exit_code == 0, result.output
+    assert len(exported(out)) == 1
+    assert "qasm: wrote 1 program(s) from 1 circuit(s)" in one_line(result.output)
+
+
+def test_programs_are_readable_like_the_stored_documents(setup):
+    runner, cfg, raw, out = setup
+    (raw / "circuit.md").write_text(markdown(H))
+    assert ingest(runner, cfg, raw, "--qasm").exit_code == 0
+
+    [path] = exported(out)
+    [document] = out.glob("*/document.md")
+    assert stat.S_IMODE(path.stat().st_mode) == stat.S_IMODE(document.stat().st_mode)
 
 
 def test_ingest_qasm_is_best_effort(setup):
@@ -268,3 +308,4 @@ def test_crawl_qasm_without_ingest_is_rejected(setup):
         app, ["crawl", "anything", "--config", str(cfg), "--qasm", "--no-ingest"]
     )
     assert result.exit_code == 2
+    assert "--qasm has nothing to export with --no-ingest" in one_line(result.output)

@@ -22,6 +22,12 @@ from quantum_sim.qasm import _STDGATES, to_qasm
 
 FIXTURES = Path(__file__).parent / "fixtures" / "qasm"
 
+# The fixture folders: ``NAME.json`` with ``NAME.qasm`` (one part) or ``NAME.1.qasm``,
+# ``NAME.2.qasm``, ... (one per part), and ``refused/NAME.json`` with ``refused/NAME.reason``
+# (one reason per line). The tests below fail when a folder is empty or a stem is lost.
+GOLDEN_STEMS = {"bell", "measure", "open-control", "parts"}
+REFUSED_STEMS = {"bundle", "legend-one", "output-ket"}
+
 # The gate declarations of OpenQASM 3's examples/stdgates.inc. The emitter must not invent a name
 # outside this set; ``sxdg`` is written as ``inv @ sx`` instead.
 STDGATES = frozenset(
@@ -108,9 +114,21 @@ def test_golden_programs_match_and_parse(fixture: Path) -> None:
         parser.parse(program.text)
 
 
+def test_the_fixture_folders_hold_every_expected_fixture() -> None:
+    goldens = {path.stem for path in FIXTURES.glob("*.json")}
+    assert goldens == GOLDEN_STEMS
+    for stem in goldens:
+        assert list(FIXTURES.glob(f"{stem}.qasm")) or list(FIXTURES.glob(f"{stem}.*.qasm")), stem
+    refused = FIXTURES / "refused"
+    assert {path.stem for path in refused.glob("*.json")} == REFUSED_STEMS
+    assert {path.stem for path in refused.glob("*.reason")} == REFUSED_STEMS
+
+
 def test_refused_fixtures_match_their_reasons() -> None:
     refused = FIXTURES / "refused"
-    for fixture in sorted(refused.glob("*.json")):
+    fixtures = sorted(refused.glob("*.json"))
+    assert {fixture.stem for fixture in fixtures} == REFUSED_STEMS
+    for fixture in fixtures:
         export = to_qasm(json.loads(fixture.read_text()))
         expected = tuple(fixture.with_suffix(".reason").read_text().splitlines())
         assert export.status == "refused", fixture.stem

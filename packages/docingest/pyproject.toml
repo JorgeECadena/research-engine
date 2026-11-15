@@ -133,6 +133,7 @@ modules = [
     "docingest.adapters.qa",
     "docingest.adapters.retrieval",
     "docingest.adapters.datasets",
+    "docingest.adapters.qasm",
 ]
 
 [[tool.importlinter.contracts]]
@@ -160,14 +161,23 @@ source_modules = ["docingest"]
 forbidden_modules = ["docingest_index"]
 
 [[tool.importlinter.contracts]]
-name = "docingest imports quantum_sim only for the QASM export; research_api and qa_bench stay separate"
+name = "docingest never imports research_api or qa_bench (separate packages)"
 type = "forbidden"
 source_modules = ["docingest"]
 forbidden_modules = ["research_api", "qa_bench"]
 
 # The QASM export deliberately uses quantum-sim's circuit/1 reader: docingest writes the drawing
 # as data, the simulator decides whether that data is a circuit. quantum_sim never imports
-# docingest, so the dependency stays one-way.
+# docingest, so the dependency stays one-way, and only the QASM adapter may import it. The import
+# graph keeps an external package whole, so the ignored import names `quantum_sim`, not
+# `quantum_sim.qasm`, the only module the adapter uses.
+[[tool.importlinter.contracts]]
+name = "Only the QASM adapter imports quantum_sim"
+type = "forbidden"
+source_modules = ["docingest"]
+forbidden_modules = ["quantum_sim"]
+ignore_imports = ["docingest.adapters.qasm -> quantum_sim"]
+allow_indirect_imports = true
 
 [[tool.importlinter.contracts]]
 name = "Only the composition root and entrypoints wire concrete adapters"

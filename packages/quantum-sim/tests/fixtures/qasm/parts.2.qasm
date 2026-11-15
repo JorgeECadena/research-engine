@@ -2,8 +2,6 @@
 // source: parts.tex, block 1, circuit 1, part 2/2
 // sign: =
 // wire 1 (top) = q[0]; the simulator reads it as the most significant bit
-// c prints q[0] first, so c[0] is wire 1
-// bit[n] declares one classical bit per wire, not only the measured ones
 // wires: 1 = q_0
 OPENQASM 3.0;
 include "stdgates.inc";

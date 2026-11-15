@@ -101,8 +101,9 @@ The layer rule is enforced by import-linter contracts in `pyproject.toml` (run
 - It may not import `docingest.adapters`, `docingest.bootstrap`, `docingest.config` or
   `docingest.entrypoints`.
 - It may not import `pypdfium2`, `mlx`, `mlx_vlm`, `paperqa`, `docling`, `pypandoc`,
-  `huggingface_hub`, `httpx`, `typer` or `rich`. `numpy` (in `stats.py`) and `jiwer`
-  (imported inside `metrics.score`) are allowed.
+  `huggingface_hub`, `httpx`, `typer`, `rich` or `quantum_sim`. `numpy` (in `stats.py`) and
+  `jiwer` (imported inside `metrics.score`) are allowed. `qasm.py` reaches quantum-sim only
+  through the `CircuitExporter` port; `adapters/qasm.py` is the only module that imports it.
 
 See [docs/architecture.md](../../../docs/architecture.md) and
 [ADR 0001](../../../docs/adr/0001-hexagonal-architecture.md) for the reasoning.
@@ -1116,20 +1117,24 @@ programs and changes nothing else. The store, the manifest and the cache key are
 
 | Name | Meaning |
 |---|---|
-| `export_corpus(selectors=(), *, values=None, out=None)` | Export the selected documents, or every document when no selector is given. A selector is a full `doc_id`, a source name, or a unique `doc_id` prefix of at least 8 characters. Returns a `QasmExportReport`; an unknown or ambiguous selector is a `ValueError`. A malformed `values` entry is a `ValueError` before any circuit is read. |
-| `export_documents(documents, *, values=None, out=None)` | The same for documents a caller already holds, which is the post-ingest hook: it does not read the corpus and does not select. |
-| `values` | Binds a free gate parameter by canonical name (`theta` or `\theta`) to a LaTeX expression for every circuit of the call. Names that match no symbol of any exported circuit are reported as warnings. |
+| `export_corpus(selectors=(), *, values=None, out=None)` | Export the selected documents, or every document when no selector is given. A selector is a full `doc_id`, a source name, or a unique `doc_id` prefix of at least 8 characters. Returns a `QasmExportReport`; an unknown or ambiguous selector is a `ValueError`. A malformed `values` entry is a `ValueError` before any circuit is read. An empty corpus is the warning `no stored documents: ingest a paper first`. |
+| `export_documents(documents, *, values=None, out=None)` | The same for documents a caller already holds, which is the post-ingest hook: it does not select. A document given twice (identical files share a `doc_id`) is exported once, and a variant (`--ocr-all`, `--max-pages`) is replaced by the document the corpus serves for that `doc_id`, the canonical one when it exists, because both would write the same file names. |
+| `values` | Binds a free gate parameter by canonical name (`theta`, `\theta`; `\theta_{1}` is `theta_1`) to a LaTeX expression for every circuit of the call. A program's header lists only the bindings its part uses. A key that the exporter reports as `unmatched` in every export of the call is a warning. |
 | `out` | Overrides the service's output directory for this call. The default is `<output_dir>/qasm`. |
-| `QasmExportReport` | `out`, `documents`, `circuits`, `files`, `refusals`, `warnings`, and the `ok` / `written` properties. `refusals` holds one line per circuit the simulator refused; `warnings` holds documents with no circuits, unreadable Markdown, reader notes, stale files removed after a refusal, and bindings that match no symbol. |
+| `QasmExportReport` | `out`, `documents`, `circuits`, `files`, `refusals`, `warnings`, `removed`, and the `ok` / `written` properties. `refusals` holds one line per circuit the simulator refused; `warnings` holds documents with no circuits, unreadable Markdown, reader notes, stale files removed, an empty corpus, and bindings that match no symbol. `removed` counts the stale programs deleted. |
 | `QasmFile` | `doc_id`, `source_name`, `block`, `circuit`, `part`, `sign`, `path`, `n_qubits`, `n_clbits`. |
 
 Each program is written to `<out>/<doc_id[:16]>-b<block:02d>-c<circuit:02d>-p<part:02d>.qasm`,
 where `block` is the 1-based fenced block of the document and `circuit` is the 1-based circuit
 inside that block. The application layer writes the file itself with the standard library
-(a temporary file in the same folder, then `os.replace`, UTF-8, LF); it does not use the store,
-because this output is derived and has no manifest. Before it writes or refuses a circuit, it
-deletes that circuit's `<id16>-bNN-cNN-p*.qasm` files from an earlier run, so a refusal cannot
-leave a stale program that looks current. A refused circuit does not stop the others: the programs
+(a temporary file in the same folder, then `os.replace`, UTF-8, LF, and the permissions of a
+normal write: `0o666` minus the umask, as the filesystem store does); it does not use the store,
+because this output is derived and has no manifest. After a document's circuits are exported, it
+deletes that document's `<id16>-bNN-cNN-pNN.qasm` files that this run did not write: the programs
+of a refused circuit, of a part, circuit or block that the Markdown lost, and all of them when the
+document has no circuit any more. The count is a warning (`removed N stale QASM file(s)`) and
+`removed` in the report. Other doc ids, files with another name or suffix, and a document whose
+Markdown cannot be read are left alone. A refused circuit does not stop the others: the programs
 that could be made are written, and the report says why each refusal happened. The simulator's
 reader is all-or-nothing for one document, so a refused circuit contributes no partially written
 parts. A document with no fences, an empty corpus, or a Markdown file that cannot be read is a
@@ -1137,7 +1142,8 @@ warning, not a refusal.
 
 The CLI decides the exit code: `docingest circuits export` exits 1 when there is a refusal
 (unless `--allow-partial`) or when nothing was exported. A refusal in the post-ingest hook is
-only a warning, because the documents are already stored.
+only a warning, because the documents are already stored. When `--index` fails first, the command
+ends before the hook and says that the circuits were not exported.
 
 ## `benchmark.py`: OCR benchmark runner, scoring and report
 

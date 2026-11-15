@@ -193,6 +193,27 @@ def test_a_failing_index_update_keeps_the_papers_and_says_how_to_catch_up(setup,
     assert parts["index"].closed >= 1
 
 
+def test_a_failing_index_update_says_that_qasm_did_not_run(setup, parts):
+    runner, cfg, _, raw, out = setup
+
+    def down(texts):
+        raise RuntimeError("the embedding server went away")
+
+    parts["embedder"].embed_documents = down
+    result = runner.invoke(app, ["ingest", str(raw), "--index", "--qasm", "-c", str(cfg)])
+    assert result.exit_code == 1
+    expected = (
+        "the circuits were not exported (--qasm runs after the index); "
+        "run `docingest circuits export` to catch up"
+    )
+    assert expected in one_line(result.output)
+    assert not (out / "qasm").exists()
+
+    without = runner.invoke(app, ["ingest", str(raw), "--index", "--force", "-c", str(cfg)])
+    assert without.exit_code == 1
+    assert "circuits were not exported" not in one_line(without.output)
+
+
 def test_files_that_fail_to_ingest_still_leave_the_good_ones_indexed(setup, parts):
     runner, cfg, _, raw, _ = setup
     (raw / "broken.xyz").write_bytes(b"\x00\x01")  # unsupported: a failed input

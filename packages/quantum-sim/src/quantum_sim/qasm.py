@@ -6,20 +6,31 @@ here too, and nothing is marked ``"ok"`` that the simulator would not run. The o
 gates that ``stdgates.inc`` defines; a gate with no exact spelling is refused rather than guessed
 at.
 
-The rules are the rules of the reader plus four format rules:
+The rules are the rules of the reader plus five format rules:
 
 * a gate with an open control is exported as ``x`` before and after the operation, which is exact
   for every gate and keeps the open control from becoming a closed one;
 * a free angle is rendered as an OpenQASM expression, not rounded to a decimal; a symbol with no
-  binding refuses that part;
+  binding refuses that part, and so does a bound angle that the simulator cannot evaluate at the
+  bound values (a division by zero, the square root of a negative number, a power that
+  overflows), with the simulator's reason;
 * every number is a float literal (``5.0``, ``2.0**3.0``), because OpenQASM's ``/`` on integers is
   integer division and an int-to-angle cast is not allowed;
 * a ``|1>`` drawn at an input (a wire legend or a text item) refuses the document: the export does
-  not add an initialization that the drawing did not state as an operation.
+  not add an initialization that the drawing did not state as an operation;
+* wire ``i`` (1 at the top) is ``q[i-1]`` and a measurement writes ``c[i-1]``. A bit string of
+  ``c`` reads ``c[n-1] ... c[0]``, so wire 1 is its rightmost character, while the simulator's
+  basis label puts wire 1 first. The ``c`` lines of the header appear only when the program
+  declares ``c``.
+
+A binding name is canonical: ``\\theta``, ``{\\theta}`` and ``theta`` are ``theta``, and
+``\\theta_{1}`` is ``theta_1``, the name the angle grammar gives the symbol. The header writes a
+``// bound:`` line only for a symbol of that part, under the reader's name, so a caller's text
+never reaches the header as a name.
 
 The standard library has no ``sxdg``; it is spelled ``inv @ sx``, which is exact. Gates the
 simulator knows but ``stdgates.inc`` does not define (``rxx``, ``ryy``, ``rzz``, ``rk``,
-``iswap``) are refused until v1 has an exact spelling for them.
+``iswap``) are refused: v1 has no exact standard spelling for them (ADR 0006).
 """
 
 from __future__ import annotations
@@ -45,6 +56,8 @@ QASM_FORMAT_VERSION = 1
 
 # A caller may write ``pi/4`` as a binding value; the angle grammar spells the constant ``\pi``.
 _PI = re.compile(r"(?<![\\A-Za-z])pi(?![A-Za-z])")
+# A braced subscript at the end of a binding name: the grammar names ``\theta_{1}`` ``theta_1``.
+_BRACED_SUBSCRIPT = re.compile(r"_\{([A-Za-z0-9]{1,8})\}$")
 
 # Gates whose name is defined by the OpenQASM 3 standard library. ``sxdg`` is not here: it is
 # written as ``inv @ sx`` below. The check in the tests keeps this table honest.
@@ -95,7 +108,8 @@ class QasmExport:
     refused as a whole, so no side of a drawn equality is written alone. ``reasons`` names each
     refused part (the reader's reasons when the simulator refused the document). ``notes`` are
     the reader's notes; ``symbols`` are the free parameters the document mentions, whether or
-    not the caller bound them.
+    not the caller bound them. ``unmatched`` holds the caller's binding keys, as given, whose
+    canonical name is none of those symbols (all of them when the reader refused the document).
     """
 
     status: str
@@ -103,6 +117,7 @@ class QasmExport:
     reasons: tuple[str, ...]
     notes: tuple[str, ...] = ()
     symbols: tuple[str, ...] = ()
+    unmatched: tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -127,27 +142,27 @@ def to_qasm(
     the generated-by header; a caller that embeds the exporter passes its own. The function
     returns refusals as data; it raises only for a programming error.
     """
+    keys = tuple(values or {})
     try:
         reading = from_gate_list(document)
     except RefusedError as error:
-        return QasmExport("refused", (), error.reasons)
+        return QasmExport("refused", (), error.reasons, unmatched=keys)
+    unmatched = tuple(key for key in keys if _binding_name(key) not in reading.symbols)
+    seen = {"notes": reading.notes, "symbols": reading.symbols, "unmatched": unmatched}
     try:
         bindings = _bindings(values)
     except _Bad as exc:
-        return QasmExport("refused", (), (str(exc),), notes=reading.notes, symbols=reading.symbols)
+        return QasmExport("refused", (), (str(exc),), **seen)
     inputs = [bit for _, bit in reading.input_kets]
     if "1" in inputs:
         return QasmExport(
             "refused",
             (),
             ("the drawing starts an input in |1>, which the export does not add",),
-            notes=reading.notes,
-            symbols=reading.symbols,
+            **seen,
         )
-    bound = tuple(
-        sorted((_binding_name(key), _comment(str(value))) for key, value in (values or {}).items())
-    )
-    return _export(reading, bindings, _Provenance(origin, None, tool, bound))
+    texts = {_binding_name(key): _comment(str(value)) for key, value in (values or {}).items()}
+    return _export(reading, bindings, texts, _Provenance(origin, None, tool, ()), unmatched)
 
 
 def validate_bindings(values: Mapping[str, str | float | int] | None) -> None:
@@ -174,7 +189,9 @@ class _Provenance:
 def _export(
     reading: Reading,
     bindings: Mapping[str, Angle],
+    texts: Mapping[str, str],
     provenance: _Provenance,
+    unmatched: tuple[str, ...],
 ) -> QasmExport:
     programs: list[QasmProgram] = []
     reasons: list[str] = []
@@ -196,15 +213,14 @@ def _export(
                 origin=f"{provenance.origin}, part {index}/{total}" if provenance.origin else "",
                 sign=sign,
                 tool=provenance.tool,
-                bound=provenance.bound,
+                bound=tuple((name, texts[name]) for name in circuit.symbols if name in texts),
             ),
         )
         programs.append(QasmProgram(index, sign, text, circuit.n_wires, n_clbits))
+    seen = {"notes": reading.notes, "symbols": reading.symbols, "unmatched": unmatched}
     if reasons:
-        return QasmExport(
-            "refused", (), tuple(reasons), notes=reading.notes, symbols=reading.symbols
-        )
-    return QasmExport("ok", tuple(programs), (), notes=reading.notes, symbols=reading.symbols)
+        return QasmExport("refused", (), tuple(reasons), **seen)
+    return QasmExport("ok", tuple(programs), (), **seen)
 
 
 # ------------------------------------------------------------------ one part
@@ -254,6 +270,13 @@ def _params(op: ParametricOp, bindings: Mapping[str, Angle]) -> tuple[str, ...]:
     if unbound:
         names = ", ".join(sorted(unbound))
         raise _Bad(f"unbound parameter(s): {names}; bind them with a value")
+    if op.symbols:
+        # The simulator evaluates the angle at the bound values; an angle it cannot evaluate
+        # (1/0, a negative square root, an overflowing power) is not written as a program.
+        try:
+            op.bind({name: bindings[name].value for name in op.symbols})
+        except AngleError as error:
+            raise _Bad(f"gate {op.gate!r} at the bound values: {error}") from None
     return rendered
 
 
@@ -285,11 +308,12 @@ def _emit(op: ParametricOp, base: str, params: tuple[str, ...]) -> str:
 
 
 def _binding_name(key: str) -> str:
-    """The canonical name of a caller's binding key (``\\theta`` and ``{theta}`` are ``theta``)."""
+    """The canonical name of a caller's binding key, the name the angle grammar gives the symbol:
+    ``\\theta`` and ``{theta}`` are ``theta``, ``\\theta_{1}`` is ``theta_1``."""
     name = key.strip()
     if name.startswith("{") and name.endswith("}"):
         name = name[1:-1].strip()
-    return name.lstrip("\\")
+    return _BRACED_SUBSCRIPT.sub(r"_\1", name.lstrip("\\"))
 
 
 def _bindings(values: Mapping[str, str | float | int] | None) -> dict[str, Angle]:
@@ -305,7 +329,7 @@ def _bindings(values: Mapping[str, str | float | int] | None) -> dict[str, Angle
             if isinstance(value, bool):
                 raise AngleError("a parameter value cannot be true or false")
             angle = (
-                Angle.of(float(value))
+                Angle.of(_float(value))
                 if isinstance(value, int | float)
                 else parse_angle(_PI.sub(r"\\pi", str(value)))
             )
@@ -316,6 +340,13 @@ def _bindings(values: Mapping[str, str | float | int] | None) -> dict[str, Angle
             raise _Bad(f"value for {name!r} has free symbol(s): {names}")
         bound[name] = angle
     return bound
+
+
+def _float(value: int | float) -> float:
+    try:
+        return float(value)
+    except OverflowError:  # an integer too large for a float, 10**400
+        raise AngleError("the number is too large for a float") from None
 
 
 def _angle(angle: Angle, bindings: Mapping[str, Angle], unbound: set[str]) -> str:
@@ -390,8 +421,9 @@ def _render(
     for name, value in provenance.bound:
         lines.append(f"// bound: {name} = {value}")
     lines.append("// wire 1 (top) = q[0]; the simulator reads it as the most significant bit")
-    lines.append("// c prints q[0] first, so c[0] is wire 1")
-    lines.append("// bit[n] declares one classical bit per wire, not only the measured ones")
+    if n_clbits:
+        lines.append("// c[i] holds q[i]; c reads c[n-1] ... c[0], so wire 1 is its rightmost bit")
+        lines.append("// bit[n] declares one classical bit per wire, not only the measured ones")
     legends = "; ".join(_comment(wire) for wire in circuit.wire_labels if wire.strip())
     if legends:
         lines.append(f"// wires: {legends}")
@@ -403,4 +435,6 @@ def _render(
 
 
 def _comment(text: str) -> str:
-    return text.replace("\r", " ").replace("\n", " ").strip()
+    """One comment line: every line break Python knows (``\\r``, ``\\v``, U+2028, ...) is a
+    space, so no text can start a line of its own."""
+    return " ".join(text.splitlines()).strip()

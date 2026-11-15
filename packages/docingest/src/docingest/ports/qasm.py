@@ -30,7 +30,9 @@ class QasmExport:
     """The result of exporting one circuit. ``status`` is ``"ok"`` or ``"refused"``.
 
     A refused circuit has no programs. ``notes`` are the reader's notes and ``symbols`` are the
-    free parameters the circuit mentions, whether or not the caller bound them.
+    free parameters the circuit mentions, whether or not the caller bound them. ``unmatched``
+    holds the caller's binding keys, as given, that name none of those symbols (all of them when
+    the circuit could not be read).
     """
 
     status: str
@@ -38,6 +40,7 @@ class QasmExport:
     reasons: tuple[str, ...]
     notes: tuple[str, ...] = ()
     symbols: tuple[str, ...] = ()
+    unmatched: tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -46,9 +49,8 @@ class QasmExport:
 
 @runtime_checkable
 class CircuitExporter(Protocol):
-    """The emitter behind ``QasmExportService``."""
-
-    fingerprint: str
+    """The emitter behind ``QasmExportService``. It has no fingerprint: the export is derived
+    output and is in no cache key."""
 
     def check_values(self, values: Mapping[str, str | float | int] | None = None) -> None:
         """Refuse a bad binding once, before any circuit is exported.

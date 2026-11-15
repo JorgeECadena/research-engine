@@ -115,8 +115,10 @@ def _index_ready(container: Container) -> None:
         raise typer.Exit(1) from e
 
 
-def _index_new(container: Container, stored: list[StoredDocument]) -> None:
-    """Add what an ingest stored to the index. The papers are stored whatever happens here."""
+def _index_new(container: Container, stored: list[StoredDocument], *, qasm: bool = False) -> None:
+    """Add what an ingest stored to the index. The papers are stored whatever happens here.
+
+    A failure ends the command, so ``--qasm`` (``qasm``) does not run; the message says so."""
     if not stored:
         return
     try:
@@ -124,6 +126,11 @@ def _index_new(container: Container, stored: list[StoredDocument]) -> None:
     except (DocingestError, RuntimeError, ValueError) as e:
         console.print(f"[red]error[/]: the index was not updated: {escape(str(e))}")
         console.print("the papers are stored; run `docingest index build` to catch up")
+        if qasm:
+            console.print(
+                "the circuits were not exported (--qasm runs after the index); "
+                "run `docingest circuits export` to catch up"
+            )
         raise typer.Exit(1) from e
     console.print(
         f"index: added {report.added}, updated {report.updated}, unchanged {report.unchanged}; "
@@ -195,7 +202,7 @@ def ingest(
     if stored:
         _summary(stored)
     if index:
-        _index_new(container, stored)
+        _index_new(container, stored, qasm=qasm)
     if qasm:
         _qasm_new(container, stored)
     if failures:
@@ -234,7 +241,7 @@ def crawl(
     if report.ingested:
         _summary(report.ingested)
     if index:
-        _index_new(container, report.ingested)
+        _index_new(container, report.ingested, qasm=qasm)
     if qasm:
         _qasm_new(container, report.ingested)
     console.print(f"fetched {len(report.fetched)}, ingested {len(report.ingested)}")

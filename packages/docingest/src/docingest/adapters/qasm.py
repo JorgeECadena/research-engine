@@ -1,7 +1,8 @@
 """Quantum-sim adapter for the circuit exporter port.
 
-This is the only docingest module that imports ``quantum_sim``. ``bootstrap`` imports it lazily,
-so a command that never exports a circuit does not load the simulator or numpy.
+This is the only docingest module that imports ``quantum_sim`` (an import-linter contract checks
+it). ``bootstrap`` imports it lazily, so a command that never exports a circuit does not load
+``quantum_sim``.
 """
 
 from __future__ import annotations
@@ -18,8 +19,6 @@ __all__ = ["QuantumSimExporter"]
 
 class QuantumSimExporter:
     """Emit OpenQASM 3 with ``quantum_sim.qasm``, after the simulator reads the circuit."""
-
-    fingerprint = "quantum-sim qasm"
 
     def check_values(self, values: Mapping[str, str | float | int] | None = None) -> None:
         validate_bindings(values)
@@ -48,4 +47,5 @@ class QuantumSimExporter:
             reasons=export.reasons,
             notes=export.notes,
             symbols=export.symbols,
+            unmatched=export.unmatched,
         )

@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import re
+import stat
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 from fakes import InMemoryStore, add_doc
 
 from docingest.adapters.qasm import QuantumSimExporter
+from docingest.application import qasm as qasm_module
 from docingest.application.qasm import QasmExportService
+from docingest.bootstrap import Container
+from docingest.config import AppConfig
+from docingest.ports import QasmExport, QasmProgram
 
 
 def quantikz(*rows: str) -> str:
@@ -301,3 +309,266 @@ def test_a_failed_write_leaves_neither_a_partial_file_nor_a_temporary_file(tmp_p
 
     assert not (out / "aaaaaaaaaaaaaaaa-b01-c01-p01.qasm").exists()
     assert list(out.iterdir()) == []
+
+
+# ------------------------------------------------------------------ stale programs
+
+
+def names(out: Path) -> set[str]:
+    return {path.name for path in out.iterdir()}
+
+
+def test_a_reexport_removes_a_circuit_a_block_and_a_document_gone_from_the_markdown(tmp_path):
+    store = InMemoryStore()
+    document(store, "a" * 64, H, quantikz("& \\gate{H} & \\qw") + "\n\n" + CNOT, CNOT)
+    out = tmp_path / "qasm"
+    first = export(store, out)
+    assert {f.path.name for f in first.files} == {
+        "aaaaaaaaaaaaaaaa-b01-c01-p01.qasm",
+        "aaaaaaaaaaaaaaaa-b02-c01-p01.qasm",
+        "aaaaaaaaaaaaaaaa-b02-c02-p01.qasm",
+        "aaaaaaaaaaaaaaaa-b03-c01-p01.qasm",
+    }
+
+    document(store, "a" * 64, H, H)  # block 2 lost its second circuit, block 3 is gone
+    second = export(store, out)
+
+    assert second.removed == 2
+    assert names(out) == {"aaaaaaaaaaaaaaaa-b01-c01-p01.qasm", "aaaaaaaaaaaaaaaa-b02-c01-p01.qasm"}
+    assert "a.md: removed 2 stale QASM file(s) from an earlier export" in second.warnings
+
+    add_doc(store, "a" * 64, [("# No circuit any more\n", "")], name="a.md")
+    third = export(store, out)
+
+    assert third.removed == 2 and names(out) == set()
+    assert "a.md: no circuits found" in third.warnings
+
+
+def test_the_cleanup_spares_other_documents_other_files_and_an_unreadable_document(tmp_path):
+    store = InMemoryStore()
+    document(store, "a" * 64, H, name="a.md")
+    document(store, "b" * 64, H, name="b.md")
+    out = tmp_path / "qasm"
+    export(store, out)
+    keep = {
+        "aaaaaaaaaaaaaaaa-b07-c01-p01.qasm.bak",  # not a .qasm file
+        "aaaaaaaaaaaaaaaa-notes.qasm",  # not a program name
+        "cccccccccccccccc-b01-c01-p01.qasm",  # another doc_id
+        ".aaaaaaaaaaaaaaaa-b09-c01-p01.qasm.x.tmp",  # a temporary file
+    }
+    for name in keep:
+        (out / name).write_text("mine")
+    (out / "bbbbbbbbbbbbbbbb-b05-c01-p01.qasm").write_text("stale of b")
+    (out / "aaaaaaaaaaaaaaaa-b05-c01-p01.qasm").write_text("stale of a")
+
+    report = export(store, out, ["a.md"])
+
+    assert report.removed == 1
+    assert names(out) == keep | {
+        "aaaaaaaaaaaaaaaa-b01-c01-p01.qasm",
+        "bbbbbbbbbbbbbbbb-b01-c01-p01.qasm",
+        "bbbbbbbbbbbbbbbb-b05-c01-p01.qasm",  # b was not exported in this run
+    }
+
+    original = store.markdown
+
+    def unreadable(doc):
+        if doc.manifest.doc_id == "a" * 64:
+            raise OSError("gone")
+        return original(doc)
+
+    store.markdown = unreadable
+    report = export(store, out)
+
+    assert report.removed == 1  # b's stale program; a's programs stay, its Markdown was not read
+    assert "aaaaaaaaaaaaaaaa-b01-c01-p01.qasm" in names(out)
+    assert "bbbbbbbbbbbbbbbb-b05-c01-p01.qasm" not in names(out)
+
+
+def test_programs_get_the_permissions_of_a_normal_write(tmp_path, monkeypatch):
+    store = InMemoryStore()
+    document(store, "a" * 64, H)
+    monkeypatch.setattr(qasm_module, "_UMASK", 0o022)
+
+    report = export(store, tmp_path / "qasm")
+
+    assert stat.S_IMODE(report.files[0].path.stat().st_mode) == 0o644
+
+
+# ------------------------------------------------------------------ the post-ingest path
+
+
+def test_export_documents_exports_a_document_given_twice_once(tmp_path):
+    store = InMemoryStore()
+    document(store, "a" * 64, H)
+    docs, _ = store.corpus()
+
+    report = QasmExportService(store, tmp_path / "qasm", QuantumSimExporter()).export_documents(
+        [docs[0], docs[0]]
+    )
+
+    assert (report.documents, report.circuits, report.written) == (1, 1, 1)
+
+
+def ocr_all_variant(store, doc_id: str, circuit: str):
+    """Store an ``--ocr-all`` run of the canonical document ``doc_id`` with another circuit."""
+    manifest = store.canonical[doc_id][0]
+    variant = manifest.model_copy(update={"ocr_all": True})
+    return store.save(variant, f"# Circuits\n\n``` latex\n{circuit}\n```\n")
+
+
+def test_an_ocr_all_variant_does_not_overwrite_the_canonical_programs(tmp_path):
+    store = InMemoryStore()
+    document(store, "a" * 64, H)
+    variant = ocr_all_variant(store, "a" * 64, CNOT)
+    assert not variant.canonical
+
+    report = QasmExportService(store, tmp_path / "qasm", QuantumSimExporter()).export_documents(
+        [variant]
+    )
+
+    [file] = report.files
+    assert "h q[0];" in file.path.read_text()
+    assert "cx" not in file.path.read_text()
+
+
+def test_a_variant_without_a_canonical_document_is_exported(tmp_path):
+    store = InMemoryStore()
+    document(store, "a" * 64, H)
+    variant = ocr_all_variant(store, "a" * 64, CNOT)
+    del store.canonical["a" * 64]
+
+    report = QasmExportService(store, tmp_path / "qasm", QuantumSimExporter()).export_documents(
+        [variant]
+    )
+
+    [file] = report.files
+    assert "cx q[0], q[1];" in file.path.read_text()
+
+
+def test_an_empty_corpus_is_a_warning(tmp_path):
+    report = export(InMemoryStore(), tmp_path / "qasm")
+    assert report.warnings == ("no stored documents: ingest a paper first",)
+
+
+# ------------------------------------------------------------------ bindings and notes
+
+
+@pytest.mark.parametrize(
+    ("values", "reason"),
+    [
+        ({"theta": "0.1", "\\theta": "0.2"}, "parameter 'theta' is bound twice"),
+        ({"theta": True}, "a parameter value cannot be true or false"),
+        ({"theta": "\\phi"}, "has free symbol(s): phi"),
+    ],
+)
+def test_bindings_the_emitter_cannot_use_are_usage_errors(tmp_path, values, reason):
+    store = InMemoryStore()
+    document(store, "a" * 64, THETA)
+    out = tmp_path / "qasm"
+
+    with pytest.raises(ValueError, match=re.escape(reason)):
+        export(store, out, values=values)
+    assert not out.exists()
+
+
+@pytest.mark.parametrize(
+    ("label", "value"),
+    [
+        ("R_y(\\frac{\\pi}{\\theta})", "0"),
+        ("R_y(\\sqrt{\\theta})", "-1"),
+        ("R_y(\\theta^{-1})", "0"),
+        ("R_y(\\theta^{64})", "10000000000"),
+    ],
+)
+def test_an_angle_undefined_after_binding_is_refused(tmp_path, label, value):
+    store = InMemoryStore()
+    document(store, "a" * 64, quantikz(f"& \\gate{{{label}}} & \\qw"))
+
+    report = export(store, tmp_path / "qasm", values={"theta": value})
+
+    assert not report.ok and report.files == ()
+    assert "at the bound values" in report.refusals[0]
+
+
+def test_a_braced_subscript_binding_matches_its_symbol(tmp_path):
+    store = InMemoryStore()
+    document(store, "a" * 64, quantikz("& \\gate{R_y(\\theta_{1})} & \\qw"))
+
+    report = export(store, tmp_path / "qasm", values={"\\theta_{1}": "0.5"})
+
+    assert report.ok and not report.warnings
+    assert "// bound: theta_1 = 0.5" in report.files[0].path.read_text()
+
+
+def test_a_program_lists_only_the_bindings_of_its_circuit(tmp_path):
+    store = InMemoryStore()
+    document(store, "a" * 64, THETA, quantikz("& \\gate{R_z(\\phi)} & \\qw"))
+
+    report = export(store, tmp_path / "qasm", values={"theta": "0.25", "phi": "0.5"})
+
+    assert report.ok
+    first, second = (file.path.read_text() for file in report.files)
+    assert "// bound: theta = 0.25" in first and "phi" not in first
+    assert "// bound: phi = 0.5" in second and "theta" not in second
+
+
+class NotingExporter:
+    """An exporter whose circuit is fine but whose reader had something to say."""
+
+    def check_values(self, values=None):
+        return None
+
+    def export(self, circuit, *, values=None, origin="", tool="docingest"):
+        program = QasmProgram(1, None, "OPENQASM 3.0;\n", 1, 0)
+        return QasmExport("ok", (program,), (), notes=("the label is not read",))
+
+
+def test_reader_notes_of_an_ok_export_are_warnings(tmp_path):
+    store = InMemoryStore()
+    document(store, "a" * 64, H)
+
+    report = QasmExportService(store, tmp_path / "qasm", NotingExporter()).export_corpus()
+
+    assert report.ok and report.written == 1
+    assert report.warnings == ("a.md, block 1, circuit 1: the label is not read",)
+
+
+# ------------------------------------------------------------------ the composition root
+
+
+def test_the_container_uses_an_exporter_override(tmp_path):
+    cfg = AppConfig.model_validate({"output_dir": str(tmp_path / "out")})
+    exporter = NotingExporter()
+    container = Container(
+        cfg, log=lambda _: None, overrides={"store": InMemoryStore(), "exporter": exporter}
+    )
+    assert container.qasm_export.exporter is exporter
+
+
+def run_python(code: str) -> str:
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True, timeout=120
+    )
+    return result.stdout.strip()
+
+
+def test_the_cli_does_not_import_quantum_sim():
+    out = run_python(
+        "import sys\nimport docingest.entrypoints.cli\nprint('quantum_sim' in sys.modules)"
+    )
+    assert out == "False"
+
+
+def test_the_container_imports_quantum_sim_for_an_export(tmp_path):
+    out = run_python(
+        "import sys\n"
+        "from docingest.bootstrap import Container\n"
+        "from docingest.config import AppConfig\n"
+        f"cfg = AppConfig.model_validate({{'output_dir': {str(tmp_path)!r}}})\n"
+        "container = Container(cfg)\n"
+        "before = 'quantum_sim' in sys.modules\n"
+        "container.qasm_export\n"
+        "print(before, 'quantum_sim' in sys.modules)"
+    )
+    assert out == "False True"

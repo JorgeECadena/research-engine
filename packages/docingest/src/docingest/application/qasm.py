@@ -9,12 +9,19 @@ It never changes the store, the manifest or the cache key: every file it writes 
 be made again from ``document.md``. The output directory is a sibling of the document folders
 (``<output_dir>/qasm`` by default), so ``DocumentStore.corpus`` never mistakes it for a document:
 it has no ``manifest.json``.
+
+Files are written atomically with the permissions of a normal write (the umask, as the filesystem
+store does). After a document's circuits are exported, its ``<doc_id[:16]>-b*-c*-p*.qasm`` files
+that this run did not write are removed (a refused circuit, a lost part, block or circuit), and
+the count is reported. Other documents' programs, other files and a document whose Markdown
+cannot be read are left alone.
 """
 
 from __future__ import annotations
 
 import contextlib
 import os
+import re
 import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -24,6 +31,9 @@ from ..domain.circuits import circuit_code_blocks, gate_list
 from ..ports import CircuitExporter, DocumentStore, StoredDocument
 
 __all__ = ["QasmExportReport", "QasmExportService", "QasmFile"]
+
+_UMASK = os.umask(0)
+os.umask(_UMASK)  # read once at import, as the filesystem store does; os.umask is process-global
 
 
 @dataclass(frozen=True)
@@ -43,7 +53,7 @@ class QasmFile:
 
 @dataclass(frozen=True)
 class QasmExportReport:
-    """What one export wrote, refused and warned about."""
+    """What one export wrote, removed, refused and warned about."""
 
     out: Path
     documents: int
@@ -51,6 +61,7 @@ class QasmExportReport:
     files: tuple[QasmFile, ...]
     refusals: tuple[str, ...]
     warnings: tuple[str, ...]
+    removed: int = 0  # stale programs of the exported documents deleted by this run
 
     @property
     def ok(self) -> bool:
@@ -82,6 +93,8 @@ class QasmExportService:
     ) -> QasmExportReport:
         """Export the selected documents (all of them when no selector is given)."""
         documents, warnings = self.store.corpus()
+        if not documents:
+            warnings = [*warnings, "no stored documents: ingest a paper first"]
         selected = _select(documents, selectors)
         return self._export(selected, values=values, out=out, warnings=warnings)
 
@@ -92,8 +105,19 @@ class QasmExportService:
         values: Mapping[str, str] | None = None,
         out: Path | None = None,
     ) -> QasmExportReport:
-        """Export documents a caller already holds, as the post-ingest hook does."""
-        return self._export(list(documents), values=values, out=out)
+        """Export documents a caller already holds, as the post-ingest hook does.
+
+        A document is exported once however often it is given (identical files share a doc_id),
+        and as the corpus holds it: a partial or forced-OCR variant (``ingest --ocr-all``) gives
+        way to the canonical document, whose programs share its file names.
+        """
+        chosen: dict[str, StoredDocument] = {}
+        for document in documents:
+            chosen.setdefault(document.manifest.doc_id, document)
+        if any(not document.canonical for document in chosen.values()):
+            corpus = {document.manifest.doc_id: document for document in self.store.corpus()[0]}
+            chosen = {doc_id: corpus.get(doc_id, doc) for doc_id, doc in chosen.items()}
+        return self._export(list(chosen.values()), values=values, out=out)
 
     def _export(
         self,
@@ -108,8 +132,9 @@ class QasmExportService:
         files: list[QasmFile] = []
         refusals: list[str] = []
         notes = list(warnings)
-        symbols: set[str] = set()
+        unmatched = set(values or {})
         circuits = 0
+        removed = 0
         for document in documents:
             manifest = document.manifest
             name = manifest.source_name
@@ -119,21 +144,19 @@ class QasmExportService:
                 notes.append(f"{name}: cannot read the stored Markdown ({e})")
                 continue
             found = 0
+            written: set[Path] = set()
             for block_no, block in enumerate(circuit_code_blocks(markdown), 1):
                 listing = gate_list(block.source)
                 for circuit_no, circuit in enumerate(listing.circuits, 1):
                     found += 1
                     circuits += 1
-                    stale = _remove_stale(
-                        target, f"{manifest.doc_id[:16]}-b{block_no:02d}-c{circuit_no:02d}-p"
-                    )
                     export = self.exporter.export(
                         circuit,
                         values=values,
                         origin=f"{name}, block {block_no}, circuit {circuit_no}",
                         tool="docingest",
                     )
-                    symbols.update(export.symbols)
+                    unmatched &= set(export.unmatched)
                     where = f"{name}, block {block_no}, circuit {circuit_no}"
                     for note in export.notes:
                         notes.append(f"{where}: {note}")
@@ -144,6 +167,7 @@ class QasmExportService:
                         )
                         path = target / filename
                         _write(path, program.text)
+                        written.add(path)
                         files.append(
                             QasmFile(
                                 doc_id=manifest.doc_id,
@@ -159,16 +183,14 @@ class QasmExportService:
                         )
                     for reason in export.reasons:
                         refusals.append(f"{where}: {reason}")
-                    if stale and export.reasons:
-                        notes.append(
-                            f"{where}: removed {stale} stale QASM file(s) from an earlier export"
-                        )
+            stale = _remove_stale(target, manifest.doc_id, keep=written)
+            removed += stale
+            if stale:
+                notes.append(f"{name}: removed {stale} stale QASM file(s) from an earlier export")
             if found == 0:
                 notes.append(f"{name}: no circuits found")
-        for key in sorted(values or {}):
-            name = _binding_name(key)
-            if name not in symbols:
-                notes.append(f"binding {key!r} matches no symbol of any exported circuit")
+        for key in sorted(unmatched):
+            notes.append(f"binding {key!r} matches no symbol of any exported circuit")
         return QasmExportReport(
             out=target,
             documents=len(documents),
@@ -176,6 +198,7 @@ class QasmExportService:
             files=tuple(files),
             refusals=tuple(refusals),
             warnings=tuple(notes),
+            removed=removed,
         )
 
 
@@ -201,22 +224,19 @@ def _select(documents: Sequence[StoredDocument], selectors: Sequence[str]) -> li
     return list(chosen.values())
 
 
-def _binding_name(key: str) -> str:
-    """The canonical name used by the emitter (``\\theta`` and ``{theta}`` are ``theta``)."""
-    name = key.strip()
-    if name.startswith("{") and name.endswith("}"):
-        name = name[1:-1].strip()
-    return name.lstrip("\\")
+def _remove_stale(target: Path, doc_id: str, *, keep: set[Path]) -> int:
+    """Delete this document's programs that this run did not write; return how many.
 
-
-def _remove_stale(target: Path, prefix: str) -> int:
-    """Delete the programs of this circuit from an earlier export; return how many."""
-    if not target.exists():
+    Only ``<doc_id[:16]>-bNN-cNN-pNN.qasm`` files are touched: the programs of other documents,
+    temporary files and anything else in the folder stay."""
+    if not target.is_dir():
         return 0
+    pattern = re.compile(rf"{re.escape(doc_id[:16])}-b\d+-c\d+-p\d+\.qasm")
     removed = 0
-    for path in target.glob(f"{prefix}*.qasm"):
-        path.unlink()
-        removed += 1
+    for path in sorted(target.iterdir()):
+        if path not in keep and pattern.fullmatch(path.name) and path.is_file():
+            path.unlink()
+            removed += 1
     return removed
 
 
@@ -226,6 +246,7 @@ def _write(path: Path, text: str) -> None:
         dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
     )
     try:
+        os.fchmod(descriptor, 0o666 & ~_UMASK)  # mkstemp creates 0600; match a normal write
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(text)
         os.replace(temporary, path)

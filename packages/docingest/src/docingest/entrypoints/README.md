@@ -182,7 +182,7 @@ Detect type, route each page (text layer / OCR / converter); write Markdown + ma
 
 - `--force` skips the cache lookup and re-processes even when a cached result exists.
 - `--index` is checked before any input is processed: without a real `index` and `embedder` in `[adapters]` it is a usage error (exit 2), and an index built for another embedder stops the command (exit 1). After the summary, the stored papers (not the rest of the corpus) are embedded if new or changed and committed, each as the version the corpus serves (a `--max-pages` or `--ocr-all` run beside a complete canonical result does not replace it in the index); the line `index: added N, updated M, unchanged K; embedded C chunks in S s` reports it. If that step fails (the embedding server is down), the papers stay stored, the message says `run docingest index build` to catch up, and the exit code is 1.
-- `--qasm` runs after the summary (and after `--index`, if both are given) over the papers this run stored. It writes one program per circuit part to `<output_dir>/qasm/` unless `--out` is given to `circuits export` later. An unreadable Markdown, a document with no circuits, a refused circuit or an unwritable directory is printed as a warning, and the exit code stays the one the ingestion earned: the store is already complete. Use `docingest circuits export` to see the same work with exit code 1 on a refusal.
+- `--qasm` runs after the summary (and after `--index`, if both are given) over the papers this run stored, each once (identical files share a `doc_id`); for a paper stored as a variant (`--ocr-all`, `--max-pages`) it exports the version the corpus serves, the canonical one when it exists. It always writes one program per circuit part to `<output_dir>/qasm/`; `docingest circuits export --out DIR` is the way to write them elsewhere. An unreadable Markdown, a document with no circuits, a refused circuit or an unwritable directory is printed as a warning, and the exit code stays the one the ingestion earned: the store is already complete. When `--index` fails, the command exits 1 before the export and prints that the circuits were not exported. Use `docingest circuits export` to see the same work with exit code 1 on a refusal.
 - `--ocr-all` applies only to PDFs (other kinds ignore it). Every page is sent to OCR; a page that no routing rule would have sent to OCR gets the reason `forced (--ocr-all)`. The result is stored as a variant, never as the canonical result.
 - `--max-pages N` limits PDF pages, image frames or converter segments to the first N. A partial result is stored as a variant. A complete canonical result already in the store satisfies a `--max-pages` request.
 
@@ -490,33 +490,41 @@ not exported. The files are derived and can be made again at any time.
 | `--doc` | text, repeatable | every stored document | Select a document by full `doc_id`, by source name, or by a unique `doc_id` prefix of at least 8 characters. An unknown or ambiguous selector is an error. |
 | `--config`, `-c` | file | `config/pipeline.toml` | Pipeline configuration. |
 | `--out` | directory | `<output_dir>/qasm` | Where to write the `.qasm` files. The directory is created if it does not exist. |
-| `--set` | `NAME=VALUE`, repeatable | none | Bind a free gate parameter for every circuit of the call. The value is LaTeX arithmetic (`pi/4`, `\frac{\pi}{2}`, `0.5`). A malformed name or value is a usage error before any circuit is written; a name that matches no symbol is a warning. |
+| `--set` | `NAME=VALUE`, repeatable | none | Bind a free gate parameter for every circuit of the call. The value is LaTeX arithmetic (`pi/4`, `\frac{\pi}{2}`, `0.5`); the name is canonical (`theta`, `\theta`; `\theta_{1}` is `theta_1`). A malformed name or value, or one name given twice in two spellings (`theta` and `\theta`), is a usage error before any circuit is written; a name that matches no symbol is a warning. |
 | `--allow-partial` | flag | off | Exit 0 when some circuits are refused; the programs that could be made are still written. |
 
 **What it does.**
 
 1. Reads the corpus (`store.corpus()`) or selects the documents named by `--doc`. A prefix shorter
-   than 8 characters is not a prefix: use the source name or a longer id.
+   than 8 characters is not a prefix: use the source name or a longer id. An empty corpus is the
+   warning `no stored documents: ingest a paper first`.
 2. For each document, finds its fenced `latex` code blocks and reads each block's circuits with
    `gate_list`. A document with no circuit is a warning, not a failure.
 3. Calls the `CircuitExporter` port for each circuit with the source name and the block and
    circuit numbers as provenance, and with the `--set` bindings. The adapter calls
    `quantum_sim.qasm.to_qasm`, which reads the document with `from_gate_list`. One program is
-   written per part; the drawn sign of a part and every binding are comments.
-4. Deletes that circuit's files from an earlier export, writes
-   `<doc_id[:16]>-b<block:02d>-c<circuit:02d>-p<part:02d>.qasm` atomically (UTF-8, LF, no
-   timestamps), and prints a table of the documents and files, then any warnings and refusals.
+   written per part; the drawn sign of a part and the bindings of the symbols it uses are
+   comments. An angle that is undefined at the bound values (`\frac{\pi}{\theta}` with
+   `theta=0`) refuses the circuit with the simulator's reason.
+4. Writes `<doc_id[:16]>-b<block:02d>-c<circuit:02d>-p<part:02d>.qasm` atomically (UTF-8, LF, no
+   timestamps, the permissions of a normal write), then deletes that document's other
+   `<doc_id[:16]>-bNN-cNN-pNN.qasm` files, the ones this run did not write (a refused circuit, a
+   lost part, circuit or block), and warns with their number. Files of other documents, other
+   names and documents whose Markdown cannot be read stay. It prints a table of the documents and
+   files, then any warnings and refusals.
 5. Does not stop at a refused circuit: the other circuits of the same document and of the later
    documents are still exported. The refused circuit contributes no programs (the simulator's
    reader is all-or-nothing), its old programs are removed, and its refusal is printed with the
    simulator's reason.
 
-**Output contract.** The header names the tool, the source and part, the drawn sign, every
-binding, the wire convention (`q[0]` is wire 1, the top of the drawing, and the simulator reads it
-as the most significant bit), the order `c` prints bits, the `bit[n]` allocation, and the wire
-legends. The body is `OPENQASM 3.0;`, `include "stdgates.inc";`, `qubit[n] q;`, a `bit[n] c;` when
-a part measures, and the gates. The exact gate mapping and the refusal list are in
-[ADR 0006](../../../docs/adr/0006-openqasm-3-export.md#gate-mapping).
+**Output contract.** The header names the tool, the source and part, the drawn sign, the bindings
+of the symbols the part uses, the wire convention (`q[0]` is wire 1, the top of the drawing, and
+the simulator reads it as the most significant bit) and the wire legends. A part that measures
+also gets `bit[n] c;` and two header lines: `c[i]` holds `q[i]`, a bit string of `c` reads
+`c[n-1] ... c[0]` (so wire 1 is its rightmost bit, the reverse of the simulator's basis label),
+and `bit[n]` has one bit per wire. The body is `OPENQASM 3.0;`, `include "stdgates.inc";`,
+`qubit[n] q;`, the `bit[n] c;` of a measured part, and the gates. The exact gate mapping and the
+refusal list are in [ADR 0006](../../../docs/adr/0006-openqasm-3-export.md#gate-mapping).
 
 **Exit behaviour.** 0 when the files were written and no circuit was refused (warnings about a
 document with no circuits do not change it). 1 when a circuit was refused and `--allow-partial` was
