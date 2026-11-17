@@ -45,7 +45,9 @@ now downstream of the simulator's reader instead of beside it.
    `ingest --qasm` and `crawl --qasm` are optional hooks that run it on the documents a run just
    stored, best effort, after the store is written. A document is exported once per run (identical
    files share a `doc_id`), and a variant (`--ocr-all`, `--max-pages`) gives way to the document
-   the corpus serves, because both would write the same file names. No manifest, cache key or
+   the corpus serves when that is the canonical document or a longer variant, because both would
+   write the same file names; otherwise the variant the run stored is exported. No manifest,
+   cache key or
    store layout changes: the output can always be made again from `document.md`.
 5. **Output directory.** The files go to `<output_dir>/qasm/` by default, or to `--out DIR`. That
    directory is a sibling of the document folders, so `DocumentStore.corpus()` ignores it: it has
@@ -121,13 +123,18 @@ symbol is refused unless the caller binds it with `values` / `--set`; nothing is
 rounded decimal. Every number is written as a float literal, because OpenQASM's `/` on two
 integers is integer division and an int-to-angle cast is not allowed:
 `R_z(\frac{1}{2}\pi)` becomes `rz((1.0/2.0)*pi)`, `R_y(5.)` becomes `ry(5.0)`, and
-`2^3` becomes `2.0**3.0`. A binding may be written as `pi/4` or `\pi/4`; its name is canonical
-(`theta`, `\theta` and `{\theta}` are `theta`, `\theta_{1}` is `theta_1`), and a name bound twice
-in two spellings, `True`, a value with a free symbol or an integer too large for a float is a
-usage error. Each bound angle is evaluated as the simulator evaluates it, and an angle that is
-undefined at the bound values (`\frac{\pi}{\theta}` with `theta=0`, `\sqrt{\theta}` with `-1`,
-`\theta^{-1}` with `0`, `\theta^{64}` with `1e10`) refuses the part with the simulator's reason,
-so the export never writes a program the simulator would refuse to run.
+`2^3` becomes `2.0**3.0`. A binding may be written as `pi/4` or `\pi/4`. Its name is one symbol
+of the angle grammar, by `quantum_sim.angles.symbol_name`, the one rule that the export, `run`
+and `check` share (`theta`, `\theta` and `{\theta}` are `theta`, `\theta_{1}` is `theta_1`). A
+name that is not one symbol (`thetta`, `pi`, `e`, `the{ta}`, `\\theta`, a name with a line break)
+is a usage error, as are a name bound twice in two spellings, `True`, a value with a free symbol
+and an integer too large for a float. A name that is one symbol but that no exported circuit
+uses is a warning. A binding written as text follows the angle grammar, so it takes no
+exponent notation: write `10000000000`, not `1e10`. Each bound angle is evaluated as the
+simulator evaluates it, and an angle that is undefined at the bound values
+(`\frac{\pi}{\theta}` with `theta=0`, `\sqrt{\theta}` with `-1`, `\theta^{-1}` with `0`,
+`\theta^{64}` with `10000000000`) refuses the part with the simulator's reason, so the export
+never writes a program the simulator would refuse to run.
 
 Refused as a whole document, never skipped: a circuit whose `status` is not `"parsed"`, an
 `unparsed*` item, `phase`, `dots`, `dots_gate`, `discard`, `control`, `sign`, an unknown kind, a
@@ -156,14 +163,24 @@ evaluate.
 - There is no QASM reader. Importing QASM back into `circuit/1` is a separate decision with its own
   grammar and refusal rules.
 - `ingest --qasm` and `crawl --qasm` never change the exit code of the ingestion. A refused
-  circuit or an unwritable output directory is a warning; the papers are already stored.
+  circuit or an unwritable output directory is a warning; the papers are already stored. The
+  hook passes no `--set` values, so a circuit with a free symbol is refused there, and its
+  programs from an earlier `docingest circuits export --set ...` are removed as stale; the
+  warning names the circuit and the symbol, and the same `circuits export --set` writes them
+  again.
+- A file that cannot be written stops the export of that document only. The error is reported
+  per document (`QasmExportReport.errors`), the document's earlier programs are kept (its cleanup
+  is skipped), the other documents are exported, and `docingest circuits export` exits 1. An
+  error in the cleanup is reported with the number of files it removed; an output folder that
+  cannot be made is one error for the run.
 
 ## Alternatives considered
 
 - **Keep the emitter in docingest with its own reader.** Rejected: it duplicated the simulator's
   label, angle and control rules and exported programs the simulator refused or misread.
 - **Put the emitter in quantum-sim but leave docingest independent.** Rejected: two consumers
-  would have to reproduce the `circuit/1` bridge, and the web adapter would need a third path.
+  would have to reproduce the `circuit/1` bridge, and the two copies could drift apart, as the
+  emitter's own reader in docingest did.
 - **Write the files during ingest** next to `document.md`. Rejected: the store would gain files it
   did not have, the cache key would have to cover them, and a failure would make an otherwise good
   ingestion look failed.

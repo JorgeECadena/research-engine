@@ -8,6 +8,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from quantum_sim import run
 from quantum_sim.qasm import QasmExport, to_qasm, validate_bindings
 
 
@@ -200,6 +201,39 @@ def test_a_binding_key_may_keep_its_backslash() -> None:
 def test_a_binding_key_may_be_braced() -> None:
     export = to_qasm(circuit((step(op(label="R_y(\\theta)")),)), values={"{ \\theta }": "0.5"})
     assert body(export) == ["ry(0.5) q[0];"]
+
+
+@pytest.mark.parametrize("key", ["theta", "\\theta", "{\\theta}"])
+def test_the_export_and_the_simulator_take_the_same_binding_names(key: str) -> None:
+    document = circuit((step(op(label="R_y(\\theta)")),))
+    export = to_qasm(document, values={key: "0.5"})
+    result = run(document, values={key: "0.5"})
+    assert export.status == "ok", export.reasons
+    assert export.symbols == ("theta",) and export.unmatched == ()
+    assert result["status"] == "ok", result["refused"]
+    assert result["values"] == {"theta": 0.5}
+
+
+def test_the_export_and_the_simulator_refuse_the_same_binding_name() -> None:
+    document = circuit((step(op(label="R_y(\\theta)")),))
+    export = to_qasm(document, values={"the{ta}": "0.5"})
+    result = run(document, values={"the{ta}": "0.5"})
+    assert export.status == "refused"
+    assert "'the{ta}' is not a parameter name" in export.reasons[0]
+    assert result["status"] == "refused"
+    assert "'the{ta}' is not a parameter name" in result["refused"][0]
+
+
+@pytest.mark.parametrize("key", ["thetta", "pi", "\\pi", "e", "x y", "\\\\theta", "$\\theta$"])
+def test_a_binding_key_that_is_not_one_symbol_is_refused(key: str) -> None:
+    export = to_qasm(circuit((step(op(label="R_y(\\theta)")),)), values={"theta": "1", key: "1"})
+    assert export.status == "refused" and export.programs == ()
+    assert export.reasons == (
+        f"{key!r} is not a parameter name: write one symbol, such as theta, \\theta or "
+        "\\theta_{1}",
+    )
+    with pytest.raises(ValueError, match="is not a parameter name"):
+        validate_bindings({key: "1"})
 
 
 def test_a_bound_symbol_scales() -> None:
@@ -586,24 +620,28 @@ def test_a_newline_in_provenance_does_not_break_the_comment() -> None:
 def test_no_line_break_of_any_kind_reaches_the_header(separator: str) -> None:
     export = to_qasm(
         circuit((step(op(label="R_y(\\theta)")),)),
-        values={"theta": f"0.5{separator}"},
+        values={"theta": f"0.25{separator}+{separator}pi"},
         origin=f"one{separator}OPENQASM 2.0;",
     )
-    text = export.programs[0].text
-    assert text.splitlines()[1] == "// source: one OPENQASM 2.0;, part 1/1"
-    assert [line for line in text.splitlines() if "OPENQASM" in line][1] == "OPENQASM 3.0;"
-
-
-def test_a_binding_name_with_a_newline_never_reaches_the_header() -> None:
-    export = to_qasm(
-        circuit((step(op(label="R_y(\\theta)")),)),
-        values={"theta": "0.5", "x\nOPENQASM 2.0;\n//": "1"},
-    )
-    assert export.status == "ok"
-    assert export.unmatched == ("x\nOPENQASM 2.0;\n//",)
+    assert export.status == "ok", export.reasons
     lines = export.programs[0].text.splitlines()
-    assert [line for line in lines if line.startswith("// bound:")] == ["// bound: theta = 0.5"]
-    assert sum("OPENQASM" in line for line in lines) == 1
+    assert lines[1] == "// source: one OPENQASM 2.0;, part 1/1"
+    assert [line for line in lines if line.startswith("// bound:")] == [
+        "// bound: theta = 0.25 + pi"
+    ]
+    start = lines.index("OPENQASM 3.0;")
+    assert all(line.startswith("//") for line in lines[:start])
+
+
+def test_a_binding_name_with_a_newline_is_refused_before_the_header() -> None:
+    key = "x\nOPENQASM 2.0;\n//"
+    export = to_qasm(circuit((step(op(label="R_y(\\theta)")),)), values={"theta": "0.5", key: "1"})
+    assert export.status == "refused" and export.programs == ()
+    assert export.unmatched == (key,)
+    assert export.reasons[0].startswith(f"{key!r} is not a parameter name")
+    assert "\n" not in export.reasons[0]
+    with pytest.raises(ValueError, match="is not a parameter name"):
+        validate_bindings({key: "1"})
 
 
 # ------------------------------------------------------------------ smaller refusals

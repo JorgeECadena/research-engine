@@ -8,7 +8,14 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from quantum_sim import Angle, AngleError, parse_angle
-from quantum_sim.angles import MAX_CHARS, MAX_DEPTH, format_number
+from quantum_sim.angles import (
+    GREEK,
+    MAX_CHARS,
+    MAX_DEPTH,
+    binding_name,
+    format_number,
+    symbol_name,
+)
 
 PI = math.pi
 
@@ -601,3 +608,90 @@ def test_an_exponent_that_is_never_closed_is_a_syntax_error(text):
 def test_a_parenthesis_outside_the_braces_of_an_exponent_is_still_a_group():
     assert parse_angle(r"2^{1}(3)").value == pytest.approx(6.0)
     assert parse_angle(r"(1-(1-3))^{2}").value == pytest.approx(9.0)
+
+
+# --- Binding names -----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("key", "name"),
+    [
+        ("theta", "theta"),
+        (r"\theta", "theta"),
+        (r"{\theta}", "theta"),
+        (r"{ \theta }", "theta"),
+        (r" {{\theta}} ", "theta"),
+        (r"\theta_1", "theta_1"),
+        (r"\theta_{1}", "theta_1"),
+        ("theta_{1}", "theta_1"),
+        (r"{\theta_{1}}", "theta_1"),
+        ("x", "x"),
+        ("x_1", "x_1"),
+        (r"\alpha_{12}", "alpha_12"),
+        (r"\Gamma", "Gamma"),
+        ("phi_{ab}", "phi_ab"),
+    ],
+)
+def test_a_binding_key_that_is_one_symbol_gets_the_name_of_the_grammar(key, name):
+    assert symbol_name(key) == name
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "",
+        "   ",
+        "{}",
+        "pi",
+        r"\pi",
+        "e",
+        "E",
+        "i",
+        "j",
+        "thetta",
+        r"\x",
+        "a\nb",
+        "x y",
+        "the{ta}",
+        r"\\theta",
+        r"$\theta$",
+        "theta_12",
+        "theta_{123456789}",
+        r"\theta _1",
+        "x\nOPENQASM 2.0;\n//",
+        "θ",
+    ],
+)
+def test_a_binding_key_that_is_not_one_symbol_has_no_name(key):
+    assert symbol_name(key) is None
+
+
+@pytest.mark.parametrize("word", sorted(GREEK))
+def test_the_binding_name_is_the_symbol_the_parser_gives(word):
+    for text in (rf"\{word}", rf"\{word}_1", rf"\{word}_{{a1}}"):
+        assert symbol_name(text) == parse_angle(text).symbols[0]
+    for letter in ("x", "k", "Z"):
+        assert symbol_name(f"{letter}_2") == parse_angle(f"{letter}_2").symbols[0]
+
+
+def test_a_binding_key_longer_than_an_angle_has_no_name():
+    # the brace loop is bounded: a request body can hold a key of a megabyte
+    assert symbol_name("{" * 10 + r"\theta" + "}" * 10) == "theta"
+    assert symbol_name("{" * 300 + r"\theta" + "}" * 300) is None
+    assert symbol_name("{" * 500_000 + "x" + "}" * 500_000) is None
+
+
+@pytest.mark.parametrize(
+    ("key", "message"),
+    [
+        ("", "a parameter binding has an empty name"),
+        (" \t", "a parameter binding has an empty name"),
+        ("thetta", "'thetta' is not a parameter name: write one symbol, such as theta, "),
+        ("x" * 60, "'" + "x" * 37 + "...' is not a parameter name"),
+    ],
+)
+def test_binding_name_says_why_a_key_is_not_a_name(key, message):
+    with pytest.raises(AngleError) as refused:
+        binding_name(key)
+    assert str(refused.value).startswith(message)
+    assert binding_name(r"{\theta_{1}}") == "theta_1"

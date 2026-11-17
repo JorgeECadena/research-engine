@@ -65,11 +65,11 @@ The package has seven layers. A module may import modules of its own layer and o
 
 ```mermaid
 flowchart TD
-    EP["entrypoints: cli, bench_cli, paperqa_hook"]
+    EP["entrypoints: cli, bench_cli, circuits_cli, paperqa_hook"]
     BS["bootstrap: REGISTRY, plugins, Container"]
-    AD["adapters: detection, pdf, ocr, images, converters, store, sources, qa, retrieval, datasets, models"]
+    AD["adapters: detection, pdf, ocr, images, converters, store, sources, qa, retrieval, datasets, models, qasm (QuantumSimExporter)"]
     CF["config: AppConfig loaded from config/pipeline.toml"]
-    AP["application: IngestService, CrawlService, AskService, BenchmarkRunner, metrics, stats"]
+    AP["application: IngestService, CrawlService, AskService, BenchmarkRunner, QasmExportService, metrics, stats"]
     PT["ports: typing.Protocol interfaces and the dataclasses that cross them"]
     DM["domain: models, routing, text, chunking, errors"]
     EP --> BS

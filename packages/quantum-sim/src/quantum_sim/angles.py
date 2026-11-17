@@ -14,7 +14,10 @@ Implicit multiplication is a factor that follows another one with no operator (`
 ``\\right`` before a parenthesis and the spacing commands (``\\,`` ``\\;`` ``\\!`` ``\\ ``
 ``~``) are ignored. A symbol is a Greek command (``\\theta``) or one ASCII letter, with an optional
 subscript (``\\alpha_1``, ``\\alpha_{12}``); it becomes a free parameter. ``e``, ``E``, ``i`` and
-``j`` are refused as symbols because they may mean a constant.
+``j`` are refused as symbols because they may mean a constant. ``symbol_name`` applies the same
+rule to a binding key (``values``, ``--set``): a key is one symbol, with an optional backslash
+and outer braces, or it is not a name at all; ``binding_name`` gives the error message the export
+and the simulator share for such a key.
 
 What is refused, with a reason, rather than guessed: anything left over after the expression;
 ``1/2\\pi`` (a division followed by an implicit product could be read two ways); two numbers
@@ -46,7 +49,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
-from quantum_sim.domain import AngleError
+from quantum_sim.domain import AngleError, short_text
 
 MAX_CHARS = 500  # enough for any float written out in full (5e-324 is 326 characters)
 MAX_DEPTH = 40  # nesting of parentheses, braces, fractions and signs
@@ -65,9 +68,12 @@ _FRACTIONS = frozenset({"frac", "dfrac", "tfrac"})
 _UNICODE = {"−": "-", "×": "*", "·": "*", "÷": "/", "π": r"\pi"}
 _NUMBER = re.compile(r"[0-9]+(?:\.[0-9]*)?|\.[0-9]+")
 _COMMAND = re.compile(r"\\([A-Za-z]+)")
-_SUBSCRIPT = re.compile(r"_(?:([A-Za-z0-9])|\{([A-Za-z0-9]{1,8})\})")
+# The subscript of a symbol: one letter or digit, or up to 8 in braces. Binding names use it too.
+_SUBSCRIPT_TEXT = r"_(?:([A-Za-z0-9])|\{([A-Za-z0-9]{1,8})\})"
+_SUBSCRIPT = re.compile(_SUBSCRIPT_TEXT)
 _CONSTANT_LETTERS = frozenset("eEij")
 _LETTERS = re.compile(r"[A-Za-z]+")
+_BINDING_KEY = re.compile(rf"(\\?)([A-Za-z]+)(?:{_SUBSCRIPT_TEXT})?")
 
 _POINT_AFTER_FACTOR = (
     "a number starting with '.' right after a factor: \\pi.5 is shown as pi.5, not as pi times "
@@ -135,6 +141,47 @@ def format_number(number: float) -> str:
     else:  # repr uses an exponent only below 1e-4 and from 1e16: the point is past the digits
         body = digits + "0" * (point - len(digits)) + ".0"
     return sign + body
+
+
+def symbol_name(key: str) -> str | None:
+    """The name of the free parameter that ``key`` spells, or ``None`` when ``key`` is not one
+    symbol of the grammar. This is the one rule for binding names (``values`` and ``--set``).
+
+    ``key`` is a symbol as an angle writes it, with an optional backslash before a Greek word,
+    an optional subscript, and any number of brace pairs around it; the name is the one the
+    parser gives the symbol: ``\\theta``, ``{\\theta}`` and ``theta`` are ``theta``, and
+    ``\\theta_{1}`` is ``theta_1``. ``pi``, ``e``, ``E``, ``i`` and ``j`` are not names (they
+    may mean a constant), nor is a word that is neither Greek nor one ASCII letter (``thetta``)
+    or anything with more in it (``the{ta}``, ``\\\\theta``, ``$\\theta$``, ``x y``), nor a key
+    of more than ``MAX_CHARS`` characters.
+    """
+    if len(key) > MAX_CHARS:  # no symbol is this long; the brace loop stays cheap
+        return None
+    text = key.strip()
+    while len(text) >= 2 and text[0] == "{" and text[-1] == "}":
+        text = text[1:-1].strip()
+    match = _BINDING_KEY.fullmatch(text)
+    if match is None:
+        return None
+    backslash, word, letter, braced = match.groups()
+    if word not in GREEK and (backslash or len(word) > 1 or word in _CONSTANT_LETTERS):
+        return None
+    subscript = letter or braced
+    return f"{word}_{subscript}" if subscript else word
+
+
+def binding_name(key: str) -> str:
+    """:func:`symbol_name`, or an ``AngleError`` whose message the export and the simulator
+    both give for a key that is not one symbol."""
+    name = symbol_name(key)
+    if name is not None:
+        return name
+    if not key.strip():
+        raise AngleError("a parameter binding has an empty name")
+    raise AngleError(
+        f"{short_text(key)!r} is not a parameter name: write one symbol, such as theta, "
+        "\\theta or \\theta_{1}"
+    )
 
 
 # --- Evaluation --------------------------------------------------------------------------------

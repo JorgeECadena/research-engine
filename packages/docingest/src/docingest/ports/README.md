@@ -728,16 +728,17 @@ class CircuitExporter(Protocol):
 
 Contract, as `QasmExportService` in `application/qasm.py` uses it:
 
-- `check_values(values)` raises `ValueError` for a binding name or value the emitter cannot use (a name bound twice, as `theta` and `\theta`; `True`; a value with a free symbol). The service calls it once, before it exports any circuit, so a bad `--set` writes nothing.
+- `check_values(values)` raises `ValueError` for a binding name or value the emitter cannot use (a name that is not one symbol of the angle grammar, such as `thetta` or `pi`; a name bound twice, as `theta` and `\theta`; `True`; a value with a free symbol). The service calls it once, before it exports any circuit, so a bad `--set` writes nothing.
 - `export(...)` returns a `QasmExport` and does not raise for a circuit it cannot write: `status` is `"ok"` or `"refused"`, and a refused export has no `programs` and one or more `reasons`. A circuit with several parts (the sides of a drawn equality) is all or nothing: if one part is refused, none is returned. An angle that cannot be evaluated at the bound values (`\frac{\pi}{\theta}` with `theta=0`) is a refusal, not an error.
 - `programs` holds one `QasmProgram` per part, with `part` (1-based), the drawn `sign` (`None` for the first part), the `text`, and the number of qubits and classical bits. The text must be deterministic: the same circuit and options give the same bytes.
-- `notes` are warnings from the reader, and `symbols` lists the free parameters the circuit mentions, whether or not `values` bound them. `unmatched` lists the keys of `values`, as given, whose canonical name (the adapter's rule: `\theta_{1}` is `theta_1`) is none of those symbols, and every key when the circuit could not be read. The service warns about a key that is unmatched in every export of the run, so the binding-name rule lives in the adapter only.
+- `notes` are warnings from the reader, and `symbols` lists the free parameters the circuit mentions, whether or not `values` bound them. `unmatched` lists the keys of `values`, as given, whose name (the adapter's rule, `quantum_sim.angles.symbol_name`: `\theta_{1}` is `theta_1`) is none of those symbols, and every key when the circuit could not be read. Its default is `None`, which means the exporter did not report it: the service then counts every key as unmatched for that circuit, so an exporter that does not check never hides a typo. The service warns about a key that is unmatched in every export of the run, so the binding-name rule lives in the adapter only.
+- `unbound` lists, for a refused export, the symbols of the circuit that `values` gave no value (empty for an ok export). The service uses it to name the circuits whose earlier programs it removed because they were refused for lack of a value, without reading the reasons' text.
 - `origin` is a one-line provenance comment and `tool` names the caller in the generated-by header.
 - There is no `fingerprint`: the export is in no cache key (see [Fingerprints and the cache key](#fingerprints-and-the-cache-key)).
 
 Not chosen through `[adapters]`: `Container.qasm_export` builds the adapter directly, importing it lazily, so a command that never exports a circuit does not load `quantum_sim`. `Container(..., overrides={"exporter": ...})` replaces it.
 
-Implementation: `adapters/qasm.py` `QuantumSimExporter`, which calls `quantum_sim.qasm.to_qasm`. There is no fake in `tests/fakes.py`; the tests use the real adapter (`tests/unit/test_qasm_export.py`, which also has a minimal `NotingExporter`).
+Implementation: `adapters/qasm.py` `QuantumSimExporter`, which calls `quantum_sim.qasm.to_qasm`. There is no fake in `tests/fakes.py`; the tests use the real adapter (`tests/unit/test_qasm_export.py`, which also has a minimal `NotingExporter` that leaves `unmatched` unreported), and `tests/contract/test_exporter_contract.py` checks the adapter against this contract (`unmatched`, `unbound`, `check_values`).
 
 ## Implementing a new adapter
 

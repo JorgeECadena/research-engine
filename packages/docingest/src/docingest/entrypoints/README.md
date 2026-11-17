@@ -182,7 +182,7 @@ Detect type, route each page (text layer / OCR / converter); write Markdown + ma
 
 - `--force` skips the cache lookup and re-processes even when a cached result exists.
 - `--index` is checked before any input is processed: without a real `index` and `embedder` in `[adapters]` it is a usage error (exit 2), and an index built for another embedder stops the command (exit 1). After the summary, the stored papers (not the rest of the corpus) are embedded if new or changed and committed, each as the version the corpus serves (a `--max-pages` or `--ocr-all` run beside a complete canonical result does not replace it in the index); the line `index: added N, updated M, unchanged K; embedded C chunks in S s` reports it. If that step fails (the embedding server is down), the papers stay stored, the message says `run docingest index build` to catch up, and the exit code is 1.
-- `--qasm` runs after the summary (and after `--index`, if both are given) over the papers this run stored, each once (identical files share a `doc_id`); for a paper stored as a variant (`--ocr-all`, `--max-pages`) it exports the version the corpus serves, the canonical one when it exists. It always writes one program per circuit part to `<output_dir>/qasm/`; `docingest circuits export --out DIR` is the way to write them elsewhere. An unreadable Markdown, a document with no circuits, a refused circuit or an unwritable directory is printed as a warning, and the exit code stays the one the ingestion earned: the store is already complete. When `--index` fails, the command exits 1 before the export and prints that the circuits were not exported. Use `docingest circuits export` to see the same work with exit code 1 on a refusal.
+- `--qasm` runs after the summary (and after `--index`, if both are given) over the papers this run stored, each once (identical files share a `doc_id`); for a paper stored as a variant (`--ocr-all`, `--max-pages`) it exports the version the corpus serves when that is the canonical document or a longer variant, and otherwise the variant this run stored. It always writes one program per circuit part to `<output_dir>/qasm/`; `docingest circuits export --out DIR` is the way to write them elsewhere. An unreadable Markdown, a document with no circuits, a refused circuit or an unwritable directory is printed as a warning, and the exit code stays the one the ingestion earned: the store is already complete. A file that cannot be written stops that paper's export only and is printed as a warning naming the paper; an output folder that cannot be made is one warning. Any other error of the export is a warning too (`the export stopped: ...`). The hook passes no `--set` values, so a circuit with a free symbol is refused, and its programs from an earlier `docingest circuits export --set ...` are removed as stale; the warning names the circuit and the symbol (`block 1, circuit 1 was refused because theta has no value: run docingest circuits export --set NAME=VALUE to write it again`). When `--index` fails, for any reason, the command exits 1 before the export and prints that the circuits were not exported. Use `docingest circuits export` to see the same work with exit code 1 on a refusal.
 - `--ocr-all` applies only to PDFs (other kinds ignore it). Every page is sent to OCR; a page that no routing rule would have sent to OCR gets the reason `forced (--ocr-all)`. The result is stored as a variant, never as the canonical result.
 - `--max-pages N` limits PDF pages, image frames or converter segments to the first N. A partial result is stored as a variant. A complete canonical result already in the store satisfies a `--max-pages` request.
 
@@ -490,8 +490,8 @@ not exported. The files are derived and can be made again at any time.
 | `--doc` | text, repeatable | every stored document | Select a document by full `doc_id`, by source name, or by a unique `doc_id` prefix of at least 8 characters. An unknown or ambiguous selector is an error. |
 | `--config`, `-c` | file | `config/pipeline.toml` | Pipeline configuration. |
 | `--out` | directory | `<output_dir>/qasm` | Where to write the `.qasm` files. The directory is created if it does not exist. |
-| `--set` | `NAME=VALUE`, repeatable | none | Bind a free gate parameter for every circuit of the call. The value is LaTeX arithmetic (`pi/4`, `\frac{\pi}{2}`, `0.5`); the name is canonical (`theta`, `\theta`; `\theta_{1}` is `theta_1`). A malformed name or value, or one name given twice in two spellings (`theta` and `\theta`), is a usage error before any circuit is written; a name that matches no symbol is a warning. |
-| `--allow-partial` | flag | off | Exit 0 when some circuits are refused; the programs that could be made are still written. |
+| `--set` | `NAME=VALUE`, repeatable | none | Bind a free gate parameter for every circuit of the call. The value is LaTeX arithmetic (`pi/4`, `\frac{\pi}{2}`, `0.5`); the name is one symbol, as an angle writes it (`theta`, `\theta` and `{\theta}` are `theta`; `\theta_{1}` is `theta_1`). A name that is not one symbol (`thetta`, `pi`, `e`, `the{ta}`, a name with a line break), a malformed value (`1e10`: no exponent notation), or one name given twice in two spellings (`theta` and `\theta`) is a usage error before any circuit is written; a name that is one symbol but matches no symbol of any exported circuit is a warning. |
+| `--allow-partial` | flag | off | Exit 0 when some circuits are refused, if at least one program was written; the programs that could be made are still written. With no program written, or a write error, the exit code is still 1. |
 
 **What it does.**
 
@@ -510,8 +510,13 @@ not exported. The files are derived and can be made again at any time.
    timestamps, the permissions of a normal write), then deletes that document's other
    `<doc_id[:16]>-bNN-cNN-pNN.qasm` files, the ones this run did not write (a refused circuit, a
    lost part, circuit or block), and warns with their number. Files of other documents, other
-   names and documents whose Markdown cannot be read stay. It prints a table of the documents and
-   files, then any warnings and refusals.
+   names and documents whose Markdown cannot be read stay. When a removed file belonged to a
+   circuit refused because a symbol has no value, the warning names the circuit and the symbol.
+   The folder is listed once, when the run starts. An `OSError` while writing a document stops
+   that document only: the error is printed with the document's name, its earlier files stay
+   (its cleanup is skipped), and the next document is exported. A failed cleanup is printed with
+   the number of files it had removed. An output folder that cannot be made is one error. It prints a table of the documents and files, then any warnings,
+   refusals and errors.
 5. Does not stop at a refused circuit: the other circuits of the same document and of the later
    documents are still exported. The refused circuit contributes no programs (the simulator's
    reader is all-or-nothing), its old programs are removed, and its refusal is printed with the
@@ -529,8 +534,9 @@ refusal list are in [ADR 0006](../../../docs/adr/0006-openqasm-3-export.md#gate-
 **Exit behaviour.** 0 when the files were written and no circuit was refused (warnings about a
 document with no circuits do not change it). 1 when a circuit was refused and `--allow-partial` was
 not given, when no program could be written at all, when a selector matches no document or more
-than one, or when an I/O error stops the export. 2 for usage errors, such as a `--set` without
-`=` or a value the emitter cannot parse.
+than one, or when an I/O error stops a document or the export. 2 for usage errors, such as a
+`--set` without `=`, a `--set` name that is not one symbol (`thetta`, `pi`) or a value the
+emitter cannot parse; a `--set` name that is one symbol but that no circuit uses is a warning.
 
 **Examples.**
 

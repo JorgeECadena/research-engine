@@ -23,10 +23,12 @@ The rules are the rules of the reader plus five format rules:
   basis label puts wire 1 first. The ``c`` lines of the header appear only when the program
   declares ``c``.
 
-A binding name is canonical: ``\\theta``, ``{\\theta}`` and ``theta`` are ``theta``, and
-``\\theta_{1}`` is ``theta_1``, the name the angle grammar gives the symbol. The header writes a
-``// bound:`` line only for a symbol of that part, under the reader's name, so a caller's text
-never reaches the header as a name.
+A binding name is one symbol of the angle grammar, by :func:`quantum_sim.angles.symbol_name`, the
+rule the simulator's ``run`` and ``check`` use too: ``\\theta``, ``{\\theta}`` and ``theta`` are
+``theta``, and ``\\theta_{1}`` is ``theta_1``. A key that is not one symbol (``thetta``, ``pi``,
+``the{ta}``, a key with a line break) is refused as a usage error; a symbol the document does
+not use is reported in ``unmatched``. The header writes a ``// bound:`` line only for a symbol of
+that part, under the reader's name, so a caller's text never reaches the header as a name.
 
 The standard library has no ``sxdg``; it is spelled ``inv @ sx``, which is exact. Gates the
 simulator knows but ``stdgates.inc`` does not define (``rxx``, ``ryy``, ``rzz``, ``rk``,
@@ -40,7 +42,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from quantum_sim.angles import Angle, format_number, parse_angle
+from quantum_sim.angles import Angle, binding_name, format_number, parse_angle, symbol_name
 from quantum_sim.domain import MEASURE, AngleError, RefusedError
 from quantum_sim.formats import ParametricCircuit, ParametricOp, Reading, from_gate_list
 
@@ -56,8 +58,6 @@ QASM_FORMAT_VERSION = 1
 
 # A caller may write ``pi/4`` as a binding value; the angle grammar spells the constant ``\pi``.
 _PI = re.compile(r"(?<![\\A-Za-z])pi(?![A-Za-z])")
-# A braced subscript at the end of a binding name: the grammar names ``\theta_{1}`` ``theta_1``.
-_BRACED_SUBSCRIPT = re.compile(r"_\{([A-Za-z0-9]{1,8})\}$")
 
 # Gates whose name is defined by the OpenQASM 3 standard library. ``sxdg`` is not here: it is
 # written as ``inv @ sx`` below. The check in the tests keeps this table honest.
@@ -109,7 +109,7 @@ class QasmExport:
     refused part (the reader's reasons when the simulator refused the document). ``notes`` are
     the reader's notes; ``symbols`` are the free parameters the document mentions, whether or
     not the caller bound them. ``unmatched`` holds the caller's binding keys, as given, whose
-    canonical name is none of those symbols (all of them when the reader refused the document).
+    name is none of those symbols (all of them when the reader refused the document).
     """
 
     status: str
@@ -137,17 +137,18 @@ def to_qasm(
 ) -> QasmExport:
     """Read ``document`` with :func:`from_gate_list` and export it as OpenQASM 3.
 
-    ``values`` binds a free parameter by its canonical name (``theta`` or ``\\theta``) to a LaTeX
-    expression or a number. ``origin`` is a one-line provenance comment. ``tool`` is the name in
-    the generated-by header; a caller that embeds the exporter passes its own. The function
-    returns refusals as data; it raises only for a programming error.
+    ``values`` binds a free parameter by its name (``theta``, ``\\theta`` or ``{\\theta}``; see
+    :func:`quantum_sim.angles.symbol_name`) to a LaTeX expression or a number; a key that is not
+    one symbol refuses the document. ``origin`` is a one-line provenance comment. ``tool`` is the
+    name in the generated-by header; a caller that embeds the exporter passes its own. The
+    function returns refusals as data; it raises only for a programming error.
     """
     keys = tuple(values or {})
     try:
         reading = from_gate_list(document)
     except RefusedError as error:
         return QasmExport("refused", (), error.reasons, unmatched=keys)
-    unmatched = tuple(key for key in keys if _binding_name(key) not in reading.symbols)
+    unmatched = tuple(key for key in keys if symbol_name(key) not in reading.symbols)
     seen = {"notes": reading.notes, "symbols": reading.symbols, "unmatched": unmatched}
     try:
         bindings = _bindings(values)
@@ -161,7 +162,7 @@ def to_qasm(
             ("the drawing starts an input in |1>, which the export does not add",),
             **seen,
         )
-    texts = {_binding_name(key): _comment(str(value)) for key, value in (values or {}).items()}
+    texts = {_name(key): _comment(str(value)) for key, value in (values or {}).items()}
     return _export(reading, bindings, texts, _Provenance(origin, None, tool, ()), unmatched)
 
 
@@ -307,22 +308,20 @@ def _emit(op: ParametricOp, base: str, params: tuple[str, ...]) -> str:
 # ------------------------------------------------------------------ parameters
 
 
-def _binding_name(key: str) -> str:
-    """The canonical name of a caller's binding key, the name the angle grammar gives the symbol:
-    ``\\theta`` and ``{theta}`` are ``theta``, ``\\theta_{1}`` is ``theta_1``."""
-    name = key.strip()
-    if name.startswith("{") and name.endswith("}"):
-        name = name[1:-1].strip()
-    return _BRACED_SUBSCRIPT.sub(r"_\1", name.lstrip("\\"))
+def _name(key: str) -> str:
+    """The name a caller's binding key gives its symbol; a key that is not one symbol is a bad
+    binding (:func:`quantum_sim.angles.symbol_name` is the rule)."""
+    try:
+        return binding_name(key)
+    except AngleError as error:
+        raise _Bad(str(error)) from None
 
 
 def _bindings(values: Mapping[str, str | float | int] | None) -> dict[str, Angle]:
     """Parse every caller binding once; a value may not name another symbol."""
     bound: dict[str, Angle] = {}
     for key, value in (values or {}).items():
-        name = _binding_name(key)
-        if not name:
-            raise _Bad("a parameter binding has an empty name")
+        name = _name(key)
         if name in bound:
             raise _Bad(f"parameter {name!r} is bound twice")
         try:

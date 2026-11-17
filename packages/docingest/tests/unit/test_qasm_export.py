@@ -29,6 +29,7 @@ THETA = quantikz("& \\gate{R_y(\\theta)} & \\qw")
 OPEN_CONTROL = quantikz("& \\octrl{1} & \\qw", "& \\gate{X} & \\qw")
 AMBIGUOUS_U = quantikz("& \\gate{U} & \\qw")
 RZZ = quantikz("\\gate[2]{R_{zz}(0.5)} & \\qw", "& \\qw")
+RZZ_GAMMA = quantikz("\\gate[2]{R_{zz}(\\gamma)} & \\qw", "& \\qw")
 ONE_INPUT = quantikz("\\lstick{\\ket{1}} & \\gate{H} & \\qw")
 
 
@@ -245,6 +246,45 @@ def test_a_refusal_removes_the_programs_of_an_earlier_run(tmp_path):
     assert any("removed 1 stale QASM file(s)" in warning for warning in second.warnings)
 
 
+def test_the_hook_names_the_circuit_whose_bound_program_it_removed(tmp_path):
+    store = InMemoryStore()
+    document(store, "a" * 64, H, THETA)
+    out = tmp_path / "qasm"
+    service = QasmExportService(store, out, QuantumSimExporter())
+    bound = service.export_corpus(values={"theta": "pi/4"})
+    assert bound.ok and bound.written == 2
+
+    report = service.export_documents(store.corpus()[0])  # the --qasm hook passes no values
+
+    assert [file.path.name for file in report.files] == ["aaaaaaaaaaaaaaaa-b01-c01-p01.qasm"]
+    assert not (out / "aaaaaaaaaaaaaaaa-b02-c01-p01.qasm").exists()
+    assert report.removed == 1
+    assert (
+        "a.md: removed 1 stale QASM file(s) from an earlier export; block 2, circuit 1 was "
+        "refused because theta has no value: run docingest circuits export --set NAME=VALUE to "
+        "write it again"
+    ) in report.warnings
+
+
+def test_the_hook_names_only_the_circuits_whose_programs_it_removed(tmp_path):
+    # block 2 is a parametric R_zz: refused with or without a value, it never had a program
+    store = InMemoryStore()
+    document(store, "a" * 64, THETA, RZZ_GAMMA)
+    out = tmp_path / "qasm"
+    service = QasmExportService(store, out, QuantumSimExporter())
+    bound = service.export_corpus(values={"theta": "pi/4", "gamma": "1"})
+    assert [file.path.name for file in bound.files] == ["aaaaaaaaaaaaaaaa-b01-c01-p01.qasm"]
+
+    report = service.export_documents(store.corpus()[0])
+
+    [note] = [warning for warning in report.warnings if "stale" in warning]
+    assert note == (
+        "a.md: removed 1 stale QASM file(s) from an earlier export; block 1, circuit 1 was "
+        "refused because theta has no value: run docingest circuits export --set NAME=VALUE to "
+        "write it again"
+    )
+
+
 def test_a_reexport_removes_a_part_that_the_document_lost(tmp_path):
     store = InMemoryStore()
     document(store, "a" * 64, H)
@@ -283,16 +323,22 @@ def test_a_binding_that_matches_no_symbol_is_reported(tmp_path):
     document(store, "a" * 64, H)
     document(store, "b" * 64, THETA)
 
-    report = export(
-        store,
-        tmp_path / "qasm",
-        values={"theta": "pi/4", "thetta": "1", "pi": "3"},
-    )
+    report = export(store, tmp_path / "qasm", values={"theta": "pi/4", "\\phi": "1"})
 
-    assert report.ok
-    assert "binding 'thetta' matches no symbol of any exported circuit" in report.warnings
-    assert "binding 'pi' matches no symbol of any exported circuit" in report.warnings
+    assert report.ok and report.written == 2
+    assert "binding '\\\\phi' matches no symbol of any exported circuit" in report.warnings
     assert not any("binding 'theta'" in warning for warning in report.warnings)
+
+
+@pytest.mark.parametrize("key", ["thetta", "pi", "a\nb"])
+def test_a_binding_key_that_is_not_one_symbol_is_a_usage_error(tmp_path, key):
+    store = InMemoryStore()
+    document(store, "a" * 64, THETA)
+    out = tmp_path / "qasm"
+
+    with pytest.raises(ValueError, match=re.escape(f"{key!r} is not a parameter name")):
+        export(store, out, values={"theta": "pi/4", key: "1"})
+    assert not out.exists()
 
 
 def test_a_failed_write_leaves_neither_a_partial_file_nor_a_temporary_file(tmp_path, monkeypatch):
@@ -304,11 +350,49 @@ def test_a_failed_write_leaves_neither_a_partial_file_nor_a_temporary_file(tmp_p
         raise OSError("disk full")
 
     monkeypatch.setattr("docingest.application.qasm.os.replace", fail)
-    with pytest.raises(OSError, match="disk full"):
-        export(store, out)
+    report = export(store, out)
 
+    assert not report.ok and report.files == ()
+    assert report.errors == (
+        "a.md: cannot finish the export: disk full; its earlier programs were kept",
+    )
     assert not (out / "aaaaaaaaaaaaaaaa-b01-c01-p01.qasm").exists()
     assert list(out.iterdir()) == []
+
+
+def test_a_write_error_stops_one_document_and_the_next_is_still_exported(tmp_path, monkeypatch):
+    store = InMemoryStore()
+    document(store, "a" * 64, H, H, name="a.md")
+    document(store, "b" * 64, H, H, name="b.md")
+    out = tmp_path / "qasm"
+    out.mkdir()
+    for doc in ("a", "b"):  # a stale program of each document from an earlier export
+        (out / f"{doc * 16}-b09-c01-p01.qasm").write_text("stale")
+    replace = qasm_module.os.replace
+
+    def full_for_b(source, destination):
+        if Path(destination).name.startswith("b" * 16 + "-b02"):
+            raise OSError("disk full")
+        return replace(source, destination)
+
+    monkeypatch.setattr("docingest.application.qasm.os.replace", full_for_b)
+    report = export(store, out)
+
+    assert [file.path.name for file in report.files] == [
+        "aaaaaaaaaaaaaaaa-b01-c01-p01.qasm",
+        "aaaaaaaaaaaaaaaa-b02-c01-p01.qasm",
+        "bbbbbbbbbbbbbbbb-b01-c01-p01.qasm",  # written before the error, and kept
+    ]
+    assert report.errors == (
+        "b.md: cannot finish the export: disk full; its earlier programs were kept",
+    )
+    assert not report.ok and report.removed == 1
+    assert names(out) == {
+        "aaaaaaaaaaaaaaaa-b01-c01-p01.qasm",
+        "aaaaaaaaaaaaaaaa-b02-c01-p01.qasm",
+        "bbbbbbbbbbbbbbbb-b01-c01-p01.qasm",
+        "bbbbbbbbbbbbbbbb-b09-c01-p01.qasm",  # b's cleanup did not run
+    }
 
 
 # ------------------------------------------------------------------ stale programs
@@ -358,6 +442,8 @@ def test_the_cleanup_spares_other_documents_other_files_and_an_unreadable_docume
     }
     for name in keep:
         (out / name).write_text("mine")
+    (out / "aaaaaaaaaaaaaaaa-b08-c01-p01.qasm").mkdir()  # a directory with a program's name
+    keep.add("aaaaaaaaaaaaaaaa-b08-c01-p01.qasm")
     (out / "bbbbbbbbbbbbbbbb-b05-c01-p01.qasm").write_text("stale of b")
     (out / "aaaaaaaaaaaaaaaa-b05-c01-p01.qasm").write_text("stale of a")
 
@@ -383,6 +469,68 @@ def test_the_cleanup_spares_other_documents_other_files_and_an_unreadable_docume
     assert report.removed == 1  # b's stale program; a's programs stay, its Markdown was not read
     assert "aaaaaaaaaaaaaaaa-b01-c01-p01.qasm" in names(out)
     assert "bbbbbbbbbbbbbbbb-b05-c01-p01.qasm" not in names(out)
+
+
+def test_a_stale_program_removed_by_someone_else_first_is_not_an_error(tmp_path, monkeypatch):
+    store = InMemoryStore()
+    document(store, "a" * 64, THETA)
+    out = tmp_path / "qasm"
+    [file] = export(store, out, values={"theta": "pi/4"}).files
+    unlink = Path.unlink
+
+    def removed_meanwhile(path, missing_ok=False):
+        unlink(path)  # another export removed it between the listing and this call
+        raise FileNotFoundError(2, "No such file or directory", str(path))
+
+    monkeypatch.setattr(Path, "unlink", removed_meanwhile)
+    report = export(store, out)
+
+    assert not file.path.exists()
+    assert report.removed == 0 and report.errors == ()
+    assert not any("stale" in warning for warning in report.warnings)
+    assert len(report.refusals) == 1
+
+
+def test_a_cleanup_error_keeps_the_count_of_what_it_removed(tmp_path, monkeypatch):
+    store = InMemoryStore()
+    document(store, "a" * 64, H)
+    out = tmp_path / "qasm"
+    out.mkdir()
+    for block in ("b05", "b06"):
+        (out / f"aaaaaaaaaaaaaaaa-{block}-c01-p01.qasm").write_text("stale")
+    unlink = Path.unlink
+    calls = []
+
+    def second_is_locked(path, missing_ok=False):
+        calls.append(path.name)
+        if len(calls) == 2:
+            raise PermissionError(13, "Permission denied", str(path))
+        unlink(path)
+
+    monkeypatch.setattr(Path, "unlink", second_is_locked)
+    report = export(store, out)
+
+    assert report.removed == 1 and report.written == 1
+    [error] = report.errors
+    assert error.startswith("a.md: cannot remove a stale QASM file: [Errno 13] Permission denied")
+    assert error.endswith("; 1 removed, the others were kept")
+    assert "a.md: removed 1 stale QASM file(s) from an earlier export" in report.warnings
+    assert names(out) == {"aaaaaaaaaaaaaaaa-b01-c01-p01.qasm", calls[1]}
+
+
+def test_an_output_folder_that_cannot_be_made_is_one_error(tmp_path):
+    store = InMemoryStore()
+    document(store, "a" * 64, H, name="a.md")
+    document(store, "b" * 64, CNOT, name="b.md")
+    out = tmp_path / "file"
+    out.write_text("not a folder")
+
+    report = export(store, out)
+
+    assert report.files == () and not report.ok
+    [error] = report.errors
+    assert error.startswith(f"cannot finish the export: the output folder {out} cannot be used")
+    assert error.endswith("; the export stopped")
 
 
 def test_programs_get_the_permissions_of_a_normal_write(tmp_path, monkeypatch):
@@ -444,6 +592,48 @@ def test_a_variant_without_a_canonical_document_is_exported(tmp_path):
 
     [file] = report.files
     assert "cx q[0], q[1];" in file.path.read_text()
+
+
+def test_a_variant_given_by_the_hook_is_exported_when_the_corpus_holds_another_variant(tmp_path):
+    # two --ocr-all runs of equal length and no canonical document: the corpus keeps the first;
+    # the hook was given the second and must export the Markdown it was given
+    store = InMemoryStore()
+    document(store, "a" * 64, H)
+    first = ocr_all_variant(store, "a" * 64, H)
+    manifest = first.manifest.model_copy(update={"config_hash": "h2"})
+    second = store.save(manifest, f"# Circuits\n\n``` latex\n{CNOT}\n```\n")
+    del store.canonical["a" * 64]
+    [held], _ = store.corpus()
+    assert held.manifest.config_hash == first.manifest.config_hash != second.manifest.config_hash
+
+    report = QasmExportService(store, tmp_path / "qasm", QuantumSimExporter()).export_documents(
+        [second]
+    )
+
+    [file] = report.files
+    assert "cx q[0], q[1];" in file.path.read_text()
+
+
+def test_a_longer_variant_in_the_corpus_is_exported_instead_of_the_one_given(tmp_path):
+    # no canonical document; the corpus serves the 3-page variant, and the hook was given a
+    # 1-page run: exporting the short one would delete the long one's programs
+    store = InMemoryStore()
+    document(store, "a" * 64, H)
+    short = ocr_all_variant(store, "a" * 64, H)
+    long_manifest = short.manifest.model_copy(update={"config_hash": "h2", "n_pages": 3})
+    store.save(long_manifest, f"# Circuits\n\n``` latex\n{H}\n```\n\n``` latex\n{CNOT}\n```\n")
+    del store.canonical["a" * 64]
+    [held], _ = store.corpus()
+    assert held.manifest.n_pages == 3 > short.manifest.n_pages
+
+    report = QasmExportService(store, tmp_path / "qasm", QuantumSimExporter()).export_documents(
+        [short]
+    )
+
+    assert [file.path.name for file in report.files] == [
+        "aaaaaaaaaaaaaaaa-b01-c01-p01.qasm",
+        "aaaaaaaaaaaaaaaa-b02-c01-p01.qasm",
+    ]
 
 
 def test_an_empty_corpus_is_a_warning(tmp_path):
@@ -532,6 +722,19 @@ def test_reader_notes_of_an_ok_export_are_warnings(tmp_path):
 
     assert report.ok and report.written == 1
     assert report.warnings == ("a.md, block 1, circuit 1: the label is not read",)
+
+
+def test_a_binding_counts_as_unmatched_when_the_exporter_does_not_report_it(tmp_path):
+    # NotingExporter leaves ``unmatched`` at None: "not reported" must not mean "all matched"
+    store = InMemoryStore()
+    document(store, "a" * 64, H)
+
+    report = QasmExportService(store, tmp_path / "qasm", NotingExporter()).export_corpus(
+        values={"phi": "1"}
+    )
+
+    assert report.ok and report.written == 1
+    assert "binding 'phi' matches no symbol of any exported circuit" in report.warnings
 
 
 # ------------------------------------------------------------------ the composition root

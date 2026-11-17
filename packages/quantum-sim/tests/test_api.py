@@ -243,7 +243,7 @@ def test_values_accept_names_with_a_backslash_and_braces_and_check_them():
         ("theta", r"\theta"),
         (r"\theta", "theta"),
         ("theta", "{theta}"),
-        ("theta", "the{ta}"),
+        ("theta", r"{\theta}"),
         ("theta_1", "theta_{1}"),
         (r"\theta_{1}", r"\theta_1"),
     ],
@@ -263,6 +263,30 @@ def test_one_symbol_given_two_values_under_two_spellings_is_refused(keys):
         (reason,) = result["refused"]
         assert f"values give {name!r} twice" in reason
         assert repr(keys[0]) in reason and repr(keys[1]) in reason
+
+
+@pytest.mark.parametrize("key", ["the{ta}", r"\\theta", "thetta", "pi", r"\pi", "e", "x y"])
+def test_a_values_key_that_is_not_one_symbol_is_refused(key):
+    # the{ta} and a doubled backslash used to bind theta: a name is one symbol of the grammar
+    document = circuit(1, item("gate", r"R_x(\theta)", [1]))
+    values = {key: 0}
+    for result in (
+        run(document, values=values),
+        run({"circuit": document, "values": values}),
+        check({"a": document, "b": document}, values=values),
+    ):
+        assert result["status"] == "refused"
+        (reason,) = result["refused"]
+        assert reason == (
+            f"{key!r} is not a parameter name: write one symbol, such as theta, \\theta or "
+            "\\theta_{1}"
+        )
+
+
+@pytest.mark.parametrize("key", ["", "  "])
+def test_an_empty_values_key_is_refused_as_the_export_refuses_it(key):
+    result = run(circuit(1, item("gate", r"R_x(\theta)", [1])), values={key: 0})
+    assert result["refused"] == ["a parameter binding has an empty name"]
 
 
 def test_two_symbols_and_the_keyword_over_the_request_are_still_fine():

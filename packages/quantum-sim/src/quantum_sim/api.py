@@ -24,7 +24,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from quantum_sim.angles import parse_angle
+from quantum_sim.angles import binding_name, parse_angle
 from quantum_sim.domain import (
     ATOL,
     CONVENTIONS,
@@ -132,10 +132,6 @@ def _read(document: object, name: str = "") -> Reading:
         raise _Refuse(*(prefix + r for r in error.reasons)) from None
 
 
-def _symbol_name(raw: str) -> str:
-    return raw.lstrip("\\").replace("{", "").replace("}", "")
-
-
 def _value_of(name: str, raw: object) -> float:
     if isinstance(raw, str):
         try:
@@ -162,7 +158,10 @@ def _bind_values(raw: object, symbols: Sequence[str]) -> dict[str, float]:
     bound: dict[str, float] = {}
     spelled: dict[str, str] = {}  # the key that gave each name
     for key, value in raw.items():
-        name = _symbol_name(str(key))
+        try:  # the one rule for a binding name, shared with the export
+            name = binding_name(str(key))
+        except AngleError as error:
+            raise _Refuse(str(error)) from None
         if name not in symbols:
             known = ", ".join(symbols) or "none"
             raise _Refuse(f"no parameter named {name!r} (the circuit has: {known})")
@@ -325,7 +324,9 @@ def run(
 
     ``request`` is a circuit/1 document, or an object with ``circuit`` and optionally ``input``
     (a basis label such as ``"010"``, wire 1 first, or a list of amplitudes), ``values`` (a
-    number or an angle in text for each symbol) and ``unitary`` (true to list the matrix); the
+    number or an angle in text for each symbol, keyed by one symbol such as ``theta``,
+    ``\\theta`` or ``\\theta_{1}``: :func:`quantum_sim.angles.symbol_name`) and ``unitary`` (true
+    to list the matrix); the
     keyword arguments, when given, replace those keys. A document with several parts (a drawn
     equality) is simulated part by part. Without a value for every symbol, nothing is simulated:
     ``status`` is ``"symbolic"`` and ``unbound`` lists the symbols.

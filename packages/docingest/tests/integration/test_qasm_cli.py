@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import stat
 from pathlib import Path
 
@@ -138,6 +139,22 @@ def test_a_name_bound_twice_in_two_spellings_is_a_usage_error(setup):
     assert exported(out) == []
 
 
+@pytest.mark.parametrize("name", ["a\nb", "thetta", "pi"])
+def test_a_set_name_that_is_not_one_symbol_is_a_usage_error(setup, name):
+    runner, cfg, raw, out = setup
+    (raw / "theta.md").write_text(markdown(THETA))
+    assert ingest(runner, cfg, raw).exit_code == 0
+
+    result = runner.invoke(
+        app,
+        ["circuits", "export", "--config", str(cfg), "--set", f"{name}=1", "--set", "theta=pi/4"],
+    )
+
+    assert result.exit_code == 2
+    assert f"{name!r} is not a parameter name" in one_line(result.output)
+    assert exported(out) == []
+
+
 def test_a_bad_set_value_fails_once_before_writing_any_circuit(setup):
     runner, cfg, raw, out = setup
     (raw / "mixed.md").write_text(markdown(H, THETA))
@@ -165,6 +182,21 @@ def test_an_unwritable_out_is_a_clear_error(setup, tmp_path):
 
     assert result.exit_code == 1
     assert "cannot finish the export" in result.output
+
+
+def test_a_store_that_cannot_be_read_is_a_clear_error(setup, monkeypatch):
+    runner, cfg, raw, _out = setup
+    (raw / "circuit.md").write_text(markdown(H))
+    assert ingest(runner, cfg, raw).exit_code == 0
+
+    def unreadable(self):
+        raise OSError("the disk went away")
+
+    monkeypatch.setattr("docingest.adapters.store.filesystem.FilesystemStore.corpus", unreadable)
+    result = runner.invoke(app, ["circuits", "export", "--config", str(cfg)])
+
+    assert result.exit_code == 1
+    assert "error: cannot finish the export: the disk went away" in one_line(result.output)
 
 
 def test_an_empty_corpus_exits_one(setup):
@@ -263,8 +295,9 @@ def test_ingest_qasm_is_best_effort(setup):
 
 
 class MarkdownCrawler:
-    def __init__(self):
+    def __init__(self, circuit: str = CNOT):
         self.records = [record("2401.00001")]
+        self.circuit = circuit
 
     def search(self, query, limit):
         return self.records[:limit]
@@ -272,8 +305,23 @@ class MarkdownCrawler:
     def fetch(self, rec, dest_dir: Path):
         dest_dir.mkdir(parents=True, exist_ok=True)
         path = dest_dir / f"{rec.key}.md"
-        path.write_text(markdown(CNOT))
+        path.write_text(markdown(self.circuit))
         return FetchedSource(path=path, record=rec, format="text")
+
+
+class UnusableCrawler:
+    """A crawler that must not be reached: a usage error comes before any network call."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def search(self, query, limit):
+        self.calls += 1
+        raise AssertionError("search was called")
+
+    def fetch(self, rec, dest_dir: Path):
+        self.calls += 1
+        raise AssertionError("fetch was called")
 
 
 class EP:
@@ -284,16 +332,20 @@ class EP:
         return lambda cfg: self._obj
 
 
-def test_crawl_qasm_writes_the_circuits(setup, monkeypatch):
-    runner, cfg, _raw, out = setup
+def use_crawler(cfg: Path, out: Path, monkeypatch, crawler) -> None:
     cfg.write_text(
         f'output_dir = "{out}"\nraw_dir = "{cfg.parent / "raw-crawl"}"\n'
         '[adapters]\ncrawler = "fake"\n'
     )
-    eps = {"docingest.crawler": EP(MarkdownCrawler())}
+    eps = {"docingest.crawler": EP(crawler)}
     monkeypatch.setattr(
         "docingest.bootstrap.entry_points", lambda group: [eps[group]] if group in eps else []
     )
+
+
+def test_crawl_qasm_writes_the_circuits(setup, monkeypatch):
+    runner, cfg, _raw, out = setup
+    use_crawler(cfg, out, monkeypatch, MarkdownCrawler())
 
     result = runner.invoke(app, ["crawl", "anything", "--config", str(cfg), "--qasm"])
 
@@ -302,10 +354,107 @@ def test_crawl_qasm_writes_the_circuits(setup, monkeypatch):
     assert "cx q[0], q[1];" in path.read_text()
 
 
-def test_crawl_qasm_without_ingest_is_rejected(setup):
-    runner, cfg, _raw, _out = setup
+def test_crawl_qasm_without_ingest_is_rejected(setup, monkeypatch):
+    runner, cfg, _raw, out = setup
+    crawler = UnusableCrawler()
+    use_crawler(cfg, out, monkeypatch, crawler)
+
     result = runner.invoke(
         app, ["crawl", "anything", "--config", str(cfg), "--qasm", "--no-ingest"]
     )
+
     assert result.exit_code == 2
     assert "--qasm has nothing to export with --no-ingest" in one_line(result.output)
+    assert crawler.calls == 0
+    assert not (cfg.parent / "raw-crawl").exists()
+
+
+UNBOUND_HINT = (
+    "removed 1 stale QASM file(s) from an earlier export; block 1, circuit 1 was refused because "
+    "theta has no value: run docingest circuits export --set NAME=VALUE to write it again"
+)
+
+
+def test_ingest_qasm_names_a_circuit_whose_bound_program_it_removed(setup):
+    runner, cfg, raw, out = setup
+    (raw / "theta.md").write_text(markdown(THETA))
+    assert ingest(runner, cfg, raw).exit_code == 0
+    bound = runner.invoke(app, ["circuits", "export", "--config", str(cfg), "--set", "theta=pi/4"])
+    assert bound.exit_code == 0, bound.output
+    assert len(exported(out)) == 1
+
+    result = ingest(runner, cfg, raw / "theta.md", "--qasm")  # a cache hit: stored as before
+
+    assert result.exit_code == 0, result.output
+    assert f"warning: theta.md: {UNBOUND_HINT}" in one_line(result.output)
+    assert exported(out) == []
+
+
+def test_crawl_qasm_names_a_circuit_whose_bound_program_it_removed(setup, monkeypatch):
+    runner, cfg, _raw, out = setup
+    use_crawler(cfg, out, monkeypatch, MarkdownCrawler(THETA))
+    assert runner.invoke(app, ["crawl", "anything", "--config", str(cfg)]).exit_code == 0
+    bound = runner.invoke(app, ["circuits", "export", "--config", str(cfg), "--set", "theta=pi/4"])
+    assert bound.exit_code == 0, bound.output
+    assert len(exported(out)) == 1
+
+    result = runner.invoke(app, ["crawl", "anything", "--config", str(cfg), "--qasm"])
+
+    assert result.exit_code == 0, result.output
+    assert f"warning: 2401.00001.md: {UNBOUND_HINT}" in one_line(result.output)
+    assert exported(out) == []
+
+
+def test_a_write_error_in_the_hook_is_a_warning(setup):
+    runner, cfg, raw, out = setup
+    (raw / "circuit.md").write_text(markdown(H))
+    out.mkdir()
+    (out / "qasm").write_text("not a directory")
+
+    result = ingest(runner, cfg, raw, "--qasm")
+
+    assert result.exit_code == 0, result.output
+    assert "warning: cannot finish the export: the output folder" in one_line(result.output)
+    assert list(out.glob("*/manifest.json"))
+    assert (out / "qasm").read_text() == "not a directory"
+
+
+def test_an_unexpected_error_in_the_hook_is_a_warning(setup, monkeypatch):
+    runner, cfg, raw, out = setup
+    (raw / "circuit.md").write_text(markdown(H))
+
+    def broken(self, documents, **kwargs):
+        raise RuntimeError("the exporter broke")
+
+    monkeypatch.setattr("docingest.application.qasm.QasmExportService.export_documents", broken)
+    result = ingest(runner, cfg, raw, "--qasm")
+
+    assert result.exit_code == 0, result.output
+    assert (
+        "warning: the export stopped: the exporter broke; run `docingest circuits export` to "
+        "catch up"
+    ) in one_line(result.output)
+    assert list(out.glob("*/manifest.json"))
+
+
+def test_a_write_error_exits_one_even_with_allow_partial(setup, monkeypatch):
+    runner, cfg, raw, out = setup
+    (raw / "one.md").write_text(markdown(H))
+    (raw / "two.md").write_text(markdown(CNOT))
+    assert ingest(runner, cfg, raw).exit_code == 0
+    replace = os.replace
+
+    def full_for_cx(source, destination):
+        if "cx" in Path(source).read_text():
+            raise OSError("disk full")
+        return replace(source, destination)
+
+    monkeypatch.setattr("docingest.application.qasm.os.replace", full_for_cx)
+    for extra in ([], ["--allow-partial"]):
+        result = runner.invoke(app, ["circuits", "export", "--config", str(cfg), *extra])
+
+        assert result.exit_code == 1, extra
+        assert "wrote 1 program(s)" in result.output
+        assert "two.md: cannot finish the export: disk full" in one_line(result.output)
+        [path] = exported(out)
+        assert "h q[0];" in path.read_text()

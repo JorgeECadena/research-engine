@@ -30,9 +30,13 @@ class QasmExport:
     """The result of exporting one circuit. ``status`` is ``"ok"`` or ``"refused"``.
 
     A refused circuit has no programs. ``notes`` are the reader's notes and ``symbols`` are the
-    free parameters the circuit mentions, whether or not the caller bound them. ``unmatched``
-    holds the caller's binding keys, as given, that name none of those symbols (all of them when
-    the circuit could not be read).
+    free parameters the circuit mentions, whether or not the caller bound them.
+
+    ``unmatched`` holds the caller's binding keys, as given, that name none of those symbols
+    (all of them when the circuit could not be read). ``None`` means the exporter did not report
+    it; the service then counts every key as unmatched for this circuit, so a binding is never
+    taken as used because nobody checked. ``unbound`` names the symbols of a refused circuit
+    that the caller gave no value; it is empty for an ok export.
     """
 
     status: str
@@ -40,7 +44,8 @@ class QasmExport:
     reasons: tuple[str, ...]
     notes: tuple[str, ...] = ()
     symbols: tuple[str, ...] = ()
-    unmatched: tuple[str, ...] = ()
+    unmatched: tuple[str, ...] | None = None
+    unbound: tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -55,7 +60,8 @@ class CircuitExporter(Protocol):
     def check_values(self, values: Mapping[str, str | float | int] | None = None) -> None:
         """Refuse a bad binding once, before any circuit is exported.
 
-        Raises ``ValueError`` for a value or name the emitter cannot use.
+        Raises ``ValueError`` for a value or name the emitter cannot use, such as a key that is
+        not one symbol of the angle grammar (``thetta``, ``pi``).
         """
         ...
 

@@ -118,12 +118,13 @@ def _index_ready(container: Container) -> None:
 def _index_new(container: Container, stored: list[StoredDocument], *, qasm: bool = False) -> None:
     """Add what an ingest stored to the index. The papers are stored whatever happens here.
 
-    A failure ends the command, so ``--qasm`` (``qasm``) does not run; the message says so."""
+    A failure of any kind ends the command with exit 1 and says how to catch up, so ``--qasm``
+    (``qasm``) does not run; the message says so."""
     if not stored:
         return
     try:
         report = container.index_service.update(stored)
-    except (DocingestError, RuntimeError, ValueError) as e:
+    except Exception as e:  # any failure: the papers are stored, say how to catch up
         console.print(f"[red]error[/]: the index was not updated: {escape(str(e))}")
         console.print("the papers are stored; run `docingest index build` to catch up")
         if qasm:
@@ -139,18 +140,28 @@ def _index_new(container: Container, stored: list[StoredDocument], *, qasm: bool
 
 
 def _qasm_new(container: Container, stored: list[StoredDocument]) -> None:
-    """Write the circuits of what an ingest stored. Best effort: the papers are stored."""
+    """Write the circuits of what an ingest stored. Best effort: the papers are stored, and a
+    problem is a warning that leaves the exit code alone.
+
+    The hook passes no ``--set`` values, so a circuit with a free symbol is refused and its
+    programs from an earlier ``circuits export --set`` are removed; the export's note names it.
+    """
     if not stored:
         return
     try:
         report = container.qasm_export.export_documents(stored)
-    except (OSError, ValueError) as e:
-        console.print(f"[yellow]warning[/]: the circuits were not exported: {escape(str(e))}")
+    except Exception as e:  # best effort: the papers are stored and the exit code stays theirs
+        console.print(
+            f"[yellow]warning[/]: the export stopped: {escape(str(e))}; "
+            "run `docingest circuits export` to catch up"
+        )
         return
     for warning in report.warnings:
         console.print(f"[yellow]warning[/]: {escape(warning)}")
     for refusal in report.refusals:
         console.print(f"[yellow]refused[/]: {escape(refusal)}")
+    for error in report.errors:
+        console.print(f"[yellow]warning[/]: {escape(error)}")
     if report.files:
         console.print(
             f"qasm: wrote {report.written} program(s) from {report.circuits} circuit(s) "

@@ -74,6 +74,8 @@ def _report(report: QasmExportReport) -> None:
         console.print(f"[yellow]warning[/]: {escape(warning)}")
     for refusal in report.refusals:
         console.print(f"[red]refused[/]: {escape(refusal)}")
+    for error in report.errors:
+        console.print(f"[red]error[/]: {escape(error)}")
     console.print(
         f"wrote {report.written} program(s) from {report.circuits} circuit(s) "
         f"in {report.documents} document(s) to {escape(str(report.out))}"
@@ -93,14 +95,18 @@ def export(
     ] = None,
     set_values: Annotated[
         list[str] | None,
-        typer.Option("--set", help="Bind a free parameter: NAME=VALUE (repeatable)"),
+        typer.Option(
+            "--set",
+            help="Bind a free parameter: NAME=VALUE, NAME one symbol such as theta or "
+            "\\theta_{1} (repeatable)",
+        ),
     ] = None,
     allow_partial: Annotated[
         bool,
         typer.Option(
             "--allow-partial",
-            help="Exit 0 when some circuits are refused; the programs that could be made "
-            "are written",
+            help="Exit 0 when some circuits are refused, if at least one program was written; "
+            "the programs that could be made are written",
         ),
     ] = False,
 ) -> None:
@@ -108,8 +114,10 @@ def export(
 
     The programs are derived from ``document.md``; the store, the manifest and the cache key
     are not changed. A circuit that cannot be exported is reported and does not stop the
-    others. The command exits 1 when a circuit is refused (unless --allow-partial) or when
-    nothing could be exported.
+    others; a file that cannot be written stops its document only. A --set name that is not
+    one symbol (thetta, pi) is a usage error; a symbol no circuit uses is a warning. The
+    command exits 1 when a circuit is refused (unless --allow-partial), when a document could
+    not be written, or when nothing could be exported.
     """
     values = _bindings(set_values)
 
@@ -122,7 +130,7 @@ def export(
 
     report = _run(config, action)
     _report(report)
-    if not report.files:
+    if not report.files or report.errors:
         raise typer.Exit(1)
     if report.refusals and not allow_partial:
         raise typer.Exit(1)

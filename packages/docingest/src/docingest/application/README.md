@@ -1118,10 +1118,10 @@ programs and changes nothing else. The store, the manifest and the cache key are
 | Name | Meaning |
 |---|---|
 | `export_corpus(selectors=(), *, values=None, out=None)` | Export the selected documents, or every document when no selector is given. A selector is a full `doc_id`, a source name, or a unique `doc_id` prefix of at least 8 characters. Returns a `QasmExportReport`; an unknown or ambiguous selector is a `ValueError`. A malformed `values` entry is a `ValueError` before any circuit is read. An empty corpus is the warning `no stored documents: ingest a paper first`. |
-| `export_documents(documents, *, values=None, out=None)` | The same for documents a caller already holds, which is the post-ingest hook: it does not select. A document given twice (identical files share a `doc_id`) is exported once, and a variant (`--ocr-all`, `--max-pages`) is replaced by the document the corpus serves for that `doc_id`, the canonical one when it exists, because both would write the same file names. |
-| `values` | Binds a free gate parameter by canonical name (`theta`, `\theta`; `\theta_{1}` is `theta_1`) to a LaTeX expression for every circuit of the call. A program's header lists only the bindings its part uses. A key that the exporter reports as `unmatched` in every export of the call is a warning. |
+| `export_documents(documents, *, values=None, out=None)` | The same for documents a caller already holds, which is the post-ingest hook: it does not select. A document given twice (identical files share a `doc_id`) is exported once, and a variant (`--ocr-all`, `--max-pages`) is replaced by the document the corpus serves for that `doc_id` when that one is canonical or has more pages, because both would write the same file names; otherwise (no canonical document, and the corpus's variant is no longer than the one given, a tie the corpus breaks by order) the variant given is exported as it is. |
+| `values` | Binds a free gate parameter by name to a LaTeX expression for every circuit of the call. The name is one symbol of the angle grammar (`theta`, `\theta` and `{\theta}` are `theta`; `\theta_{1}` is `theta_1`); a key that is not one symbol (`thetta`, `pi`) is a `ValueError` from the exporter's `check_values`, before any circuit is read. A program's header lists only the bindings its part uses. A key that is unmatched in every export of the call is a warning; an export whose `unmatched` is `None` (the exporter did not report it) counts every key as unmatched. |
 | `out` | Overrides the service's output directory for this call. The default is `<output_dir>/qasm`. |
-| `QasmExportReport` | `out`, `documents`, `circuits`, `files`, `refusals`, `warnings`, `removed`, and the `ok` / `written` properties. `refusals` holds one line per circuit the simulator refused; `warnings` holds documents with no circuits, unreadable Markdown, reader notes, stale files removed, an empty corpus, and bindings that match no symbol. `removed` counts the stale programs deleted. |
+| `QasmExportReport` | `out`, `documents`, `circuits`, `files`, `refusals`, `warnings`, `removed`, `errors`, and the `ok` / `written` properties. `refusals` holds one line per circuit the simulator refused; `warnings` holds documents with no circuits, unreadable Markdown, reader notes, stale files removed (naming the circuits refused because a symbol has no value, from the port's `unbound`), an empty corpus, and bindings that match no symbol. `removed` counts the stale programs deleted. `errors` holds one line per document whose export stopped on an `OSError` (`<name>: cannot finish the export: ...; its earlier programs were kept`), one per failed cleanup (`<name>: cannot remove a stale QASM file: ...; N removed, the others were kept`), or one line for an output folder that cannot be made; `ok` is false when there is a refusal or an error. |
 | `QasmFile` | `doc_id`, `source_name`, `block`, `circuit`, `part`, `sign`, `path`, `n_qubits`, `n_clbits`. |
 
 Each program is written to `<out>/<doc_id[:16]>-b<block:02d>-c<circuit:02d>-p<part:02d>.qasm`,
@@ -1133,7 +1133,16 @@ because this output is derived and has no manifest. After a document's circuits 
 deletes that document's `<id16>-bNN-cNN-pNN.qasm` files that this run did not write: the programs
 of a refused circuit, of a part, circuit or block that the Markdown lost, and all of them when the
 document has no circuit any more. The count is a warning (`removed N stale QASM file(s)`) and
-`removed` in the report. Other doc ids, files with another name or suffix, and a document whose
+`removed` in the report. When a removed program belonged to a circuit refused because a symbol
+has no value (the post-ingest hook passes no values), the warning adds `block B, circuit C was
+refused because theta has no value: run docingest circuits export --set NAME=VALUE to write it
+again`. The output folder is listed once per run, when it starts (an error listing it stops the
+export), and a file that is gone before it is deleted is skipped and not counted. A filesystem
+error while writing one document stops that document only: the error is in `errors`, the
+programs it already wrote stay in `files`, its cleanup is skipped, and the next document is
+exported. An error in the cleanup is in `errors` with the number of files it had removed, which
+`removed` counts too. An output folder that cannot be made (`--out` names a file) is one error,
+and the run stops. Other doc ids, files with another name or suffix, and a document whose
 Markdown cannot be read are left alone. A refused circuit does not stop the others: the programs
 that could be made are written, and the report says why each refusal happened. The simulator's
 reader is all-or-nothing for one document, so a refused circuit contributes no partially written
@@ -1141,8 +1150,9 @@ parts. A document with no fences, an empty corpus, or a Markdown file that canno
 warning, not a refusal.
 
 The CLI decides the exit code: `docingest circuits export` exits 1 when there is a refusal
-(unless `--allow-partial`) or when nothing was exported. A refusal in the post-ingest hook is
-only a warning, because the documents are already stored. When `--index` fails first, the command
+(unless `--allow-partial`), when a document has an error, or when nothing was exported. A
+refusal or an error in the post-ingest hook is only a warning, because the documents are
+already stored. When `--index` fails first, the command
 ends before the hook and says that the circuits were not exported.
 
 ## `benchmark.py`: OCR benchmark runner, scoring and report

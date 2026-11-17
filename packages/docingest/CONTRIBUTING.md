@@ -106,11 +106,11 @@ Paths are relative to the package folder, `packages/docingest`. The repository r
 |---|---|
 | `src/docingest/domain/` | `models.py` (`DocumentManifest`, `PageRecord`, `SourceKind`, `PageMethod`, ...), `routing.py` (`RoutingPolicy`, `decide`), `text.py` (text-layer clean-up, Markdown page markers), `chunking.py` (page-aware chunks), `errors.py` |
 | `src/docingest/ports/` | one `typing.Protocol` per port, plus the frozen dataclasses that cross it |
-| `src/docingest/application/` | use cases: `IngestService`, `CrawlService`, `AskService`, `BenchmarkRunner`; `metrics.py` and `stats.py` |
+| `src/docingest/application/` | use cases: `IngestService`, `CrawlService`, `AskService`, `BenchmarkRunner`, `QasmExportService` (`qasm.py`); `metrics.py` and `stats.py` |
 | `src/docingest/config.py` | `AppConfig` and its sections, loaded from `config/pipeline.toml` |
-| `src/docingest/adapters/<area>/` | implementations, one subpackage per area: `detection`, `pdf`, `ocr`, `images`, `converters`, `store`, `sources`, `qa`, `retrieval`, `datasets`, plus `models` (the shared Hugging Face resolver) |
+| `src/docingest/adapters/<area>/` | implementations, one subpackage per area: `detection`, `pdf`, `ocr`, `images`, `converters`, `store`, `sources`, `qa`, `retrieval`, `datasets`, plus `models` (the shared Hugging Face resolver) and the module `qasm.py` (`QuantumSimExporter`, the only module that imports `quantum_sim`) |
 | `src/docingest/bootstrap.py` | the composition root: `REGISTRY`, entry-point plugins, `Container` |
-| `src/docingest/entrypoints/` | `cli.py` (typer), `bench_cli.py` (`docingest bench ...`), `ask_lines.py` (`docingest ask --stdin`), `paperqa_hook.py` |
+| `src/docingest/entrypoints/` | `cli.py` (typer), `bench_cli.py` (`docingest bench ...`), `circuits_cli.py` (`docingest circuits export`), `ask_lines.py` (`docingest ask --stdin`), `paperqa_hook.py` |
 | `config/` | `pipeline.toml`, `benchmark.toml`, `examples/` |
 | `scripts/` | `check.sh` (the quality gates) and the data, server and benchmark helpers |
 | `tests/` | `unit/`, `contract/`, `integration/`, `fixtures/`, `fakes.py`, `builders.py`, `conftest.py` |

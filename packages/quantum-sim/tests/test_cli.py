@@ -245,6 +245,7 @@ def test_bad_assignments_are_a_refusal(tmp_path, capsys):
         ("theta=", "empty angle"),
         ("theta=x", "free symbols"),
         ("beta=1", "no parameter named 'beta'"),
+        ("pi=1", "'pi' is not a parameter name"),
         ("theta=1/0", "division by zero"),
     ):
         assert main(["run", path, "--set", text]) == 1, text
