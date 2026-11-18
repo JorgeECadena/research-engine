@@ -24,7 +24,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from quantum_sim.angles import binding_name, parse_angle
+from quantum_sim.angles import binding_name, parse_value
 from quantum_sim.domain import (
     ATOL,
     CONVENTIONS,
@@ -135,7 +135,7 @@ def _read(document: object, name: str = "") -> Reading:
 def _value_of(name: str, raw: object) -> float:
     if isinstance(raw, str):
         try:
-            number = parse_angle(raw).value
+            number = parse_value(raw).value
         except AngleError as error:
             raise _Refuse(f"the value of {name!r}: {error}") from None
     elif _is_number(raw):
@@ -325,8 +325,9 @@ def run(
     ``request`` is a circuit/1 document, or an object with ``circuit`` and optionally ``input``
     (a basis label such as ``"010"``, wire 1 first, or a list of amplitudes), ``values`` (a
     number or an angle in text for each symbol, keyed by one symbol such as ``theta``,
-    ``\\theta`` or ``\\theta_{1}``: :func:`quantum_sim.angles.symbol_name`) and ``unitary`` (true
-    to list the matrix); the
+    ``\\theta`` or ``\\theta_{1}``: :func:`quantum_sim.angles.symbol_name`; a text value is read
+    by :func:`quantum_sim.angles.parse_value`, so ``pi/4`` is ``\\pi/4``, as in the export) and
+    ``unitary`` (true to list the matrix); the
     keyword arguments, when given, replace those keys. A document with several parts (a drawn
     equality) is simulated part by part. Without a value for every symbol, nothing is simulated:
     ``status`` is ``"symbolic"`` and ``unbound`` lists the symbols.
@@ -386,7 +387,8 @@ def check(request: object, *, values: object = None) -> dict[str, Any]:
     A matrix or state is a list of numbers or ``[re, im]`` pairs; a matrix must be unitary. A
     circuit with measurements is refused in every one of these (it has no unitary, and no single
     state). ``equal_to_target`` is true only if every comparison is equal; ``comparisons`` has
-    the details of each.
+    the details of each. ``values`` (the keyword, or the request's key) binds the symbols as in
+    :func:`run`.
     """
     try:
         return _check(request, values)

@@ -215,6 +215,24 @@ def test_symbols_are_reported_until_they_have_values():
 PI_2 = math.pi / 2
 
 
+@pytest.mark.parametrize("text", ["pi/4", r"\pi/4", "pi / 4", r"\frac{pi}{4}"])
+def test_a_value_may_write_pi_without_the_backslash_as_the_export_does(text):
+    document = circuit(1, item("gate", r"R_y(\theta)", [1]))
+    result = run(document, values={"theta": text})
+    assert result["status"] == "ok", result["refused"]
+    assert result["values"] == {"theta": math.pi / 4}
+    target = circuit(1, item("gate", r"R_y(\pi/4)", [1]))
+    checked = check({"a": document, "b": target}, values={"theta": text})
+    assert checked["status"] == "ok" and checked["equal_to_target"] is True
+
+
+def test_pi_inside_a_longer_word_is_still_refused_as_a_value():
+    document = circuit(1, item("gate", r"R_y(\theta)", [1]))
+    result = run(document, values={"theta": "pie/4"})
+    assert result["status"] == "refused"
+    assert "the letters 'pie' in a row" in " ".join(result["refused"])
+
+
 def test_values_accept_names_with_a_backslash_and_braces_and_check_them():
     document = circuit(1, item("gate", r"R_y(\alpha_1)", [1]))
     assert run(document, values={r"\alpha_{1}": 0.5})["status"] == "ok"

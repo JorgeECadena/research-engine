@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import stat
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -169,6 +170,20 @@ def test_a_bad_set_value_fails_once_before_writing_any_circuit(setup):
     assert exported(out) == []
 
 
+def test_a_bad_set_value_names_the_position_in_the_value_as_typed(setup):
+    runner, cfg, raw, out = setup
+    (raw / "theta.md").write_text(markdown(THETA))
+    assert ingest(runner, cfg, raw).exit_code == 0
+
+    result = runner.invoke(
+        app, ["circuits", "export", "--config", str(cfg), "--set", "theta=   pi ?"]
+    )
+
+    assert result.exit_code == 2
+    assert "'?' at position 6" in one_line(result.output)
+    assert exported(out) == []
+
+
 def test_an_unwritable_out_is_a_clear_error(setup, tmp_path):
     runner, cfg, raw, _out = setup
     (raw / "circuit.md").write_text(markdown(H))
@@ -182,6 +197,30 @@ def test_an_unwritable_out_is_a_clear_error(setup, tmp_path):
 
     assert result.exit_code == 1
     assert "cannot finish the export" in result.output
+
+
+def test_a_run_stopped_by_an_unusable_out_reports_only_the_papers_it_reached(setup, tmp_path):
+    runner, cfg, raw, out = setup
+    first, second = raw / "a.md", raw / "b.md"
+    first.write_bytes(f"{markdown(H)}\nPaper A.\n".encode())  # contents chosen for the order
+    second.write_bytes(markdown(THETA).encode())
+    assert ingest(runner, cfg, raw).exit_code == 0
+    folders = sorted(path.parent.name for path in out.glob("*/manifest.json"))
+    assert folders == [
+        sha256(first.read_bytes()).hexdigest()[:16],
+        sha256(second.read_bytes()).hexdigest()[:16],
+    ]
+    not_a_directory = tmp_path / "notadir"
+    not_a_directory.write_text("")
+
+    command = ["circuits", "export", "--config", str(cfg), "--set", "theta=pi/4"]
+    result = runner.invoke(app, [*command, "--out", str(not_a_directory)])
+
+    assert result.exit_code == 1
+    text = one_line(result.output)
+    assert f"the output folder {not_a_directory} cannot be used" in text
+    assert "matches no symbol" not in text
+    assert "wrote 0 program(s) from 1 circuit(s) in 1 document(s)" in text
 
 
 def test_a_store_that_cannot_be_read_is_a_clear_error(setup, monkeypatch):
@@ -402,6 +441,29 @@ def test_crawl_qasm_names_a_circuit_whose_bound_program_it_removed(setup, monkey
 
     assert result.exit_code == 0, result.output
     assert f"warning: 2401.00001.md: {UNBOUND_HINT}" in one_line(result.output)
+    assert exported(out) == []
+
+
+def test_ingest_qasm_does_not_blame_a_missing_value_for_another_refusal(setup):
+    # the stored Markdown changes under the same doc_id (a new reader, ingest --force): block 1
+    # now starts in |1>, which no value of theta exports
+    runner, cfg, raw, out = setup
+    (raw / "theta.md").write_text(markdown(THETA))
+    assert ingest(runner, cfg, raw).exit_code == 0
+    bound = runner.invoke(app, ["circuits", "export", "--config", str(cfg), "--set", "theta=pi/4"])
+    assert bound.exit_code == 0, bound.output
+    assert len(exported(out)) == 1
+    [stored] = out.glob("*/document.md")
+    one_input = quantikz("\\lstick{\\ket{1}} & \\gate{R_y(\\theta)} & \\qw")
+    stored.write_text(stored.read_text().replace(THETA, one_input))
+
+    result = ingest(runner, cfg, raw / "theta.md", "--qasm")  # a cache hit: the changed Markdown
+
+    assert result.exit_code == 0, result.output
+    text = one_line(result.output)
+    assert "the drawing starts an input in |1>" in text
+    assert "warning: theta.md: removed 1 stale QASM file(s) from an earlier export" in text
+    assert "has no value" not in text
     assert exported(out) == []
 
 

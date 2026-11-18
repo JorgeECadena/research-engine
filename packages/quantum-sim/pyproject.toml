@@ -98,9 +98,10 @@ source_modules = [
 ]
 forbidden_modules = ["numpy"]
 
-# The other direction is a contract in docingest's pyproject.toml: docingest may import
-# quantum_sim.qasm for its OpenQASM 3 export, but quantum_sim never imports docingest, because
-# each package's gates run with only that package installed.
+# The other direction is a contract in docingest's pyproject.toml: docingest's QASM adapter may
+# import quantum_sim (quantum_sim.qasm and quantum_sim.angles) for its OpenQASM 3 export, but
+# quantum_sim never imports docingest, because quantum-sim's gates run with only quantum-sim
+# installed.
 [[tool.importlinter.contracts]]
 name = "quantum_sim never imports docingest, its plugins, research_api or qa_bench"
 type = "forbidden"

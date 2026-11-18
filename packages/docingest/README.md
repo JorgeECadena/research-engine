@@ -66,7 +66,7 @@ The codebase uses a hexagonal (ports and adapters) architecture, so the OCR mode
 - **Robust LaTeX conversion.** Safe archive extraction, arXiv-style main-file detection, a Python flattener for includes, pandoc in `--sandbox` mode with a timeout and heap cap, and a pylatexenc plain-text fallback that applies to the sections pandoc cannot read, not to the whole paper ([LaTeX](#latex-conversion)).
 - **Circuits, equation numbers and references from LaTeX.** A quantum circuit (`quantikz`, `\Qcircuit`, `yquant`) is kept as a fenced `latex` code block with the author's exact source. The number of a display equation is written as `\tag{n}`, and `\eqref{x}` becomes `(n)`. A reference entry without a citation key (`\bibitem{}`) stays in its list instead of being counted as lost ([circuits](src/docingest/adapters/converters/README.md#quantum-circuits), [equation numbers](src/docingest/adapters/converters/README.md#equation-numbers)).
 - **The gate list as data, with circuit readers that deny by default.** `gate_list(source)` in `domain/circuits.py` returns the plain-text gate list of a circuit code block and, in `GateList.circuits`, the same reading as data: one `CircuitSteps` per circuit, whose `to_dict()` is the `circuit/1` format that [quantum-sim](../quantum-sim/README.md) reads without importing docingest. The readers refuse by default: every token of a circuit's source must be understood by a rule or listed as having no effect, and a token no rule consumed (an unknown command, text that is not a basis ket, an option or wrapper that could hide gates) becomes an `unparsed` item and makes the circuit `partial`, so a simulator refuses it instead of running a guess ([gate lists as data](src/docingest/domain/README.md#the-steps-as-data), [reader rules](src/docingest/domain/README.md#circuitspy)).
-- **OpenQASM 3 export, validated by the simulator's reader.** `docingest circuits export` reads the fenced circuit blocks of the stored documents and delegates each `CircuitSteps` to `quantum_sim.qasm.to_qasm`, which reads it with `from_gate_list` before writing a line. The result is one deterministic program per side of a drawn equality, with provenance, the wire convention and the drawn sign, under `<output_dir>/qasm/`. A circuit the simulator refuses is refused, never marked `"ok"`; open controls are conjugated with `x`; a free parameter is bound with `--set` (the name is one symbol, such as `theta` or `\theta_{1}`; a typo such as `thetta`, or `pi`, is a usage error) or the circuit is refused; a refusal in one circuit, or a file that cannot be written for one paper, does not stop the others. `ingest --qasm` and `crawl --qasm` run the same export, best effort and without `--set`, after storing ([ADR 0006](docs/adr/0006-openqasm-3-export.md)).
+- **OpenQASM 3 export, validated by the simulator's reader.** `docingest circuits export` reads the fenced circuit blocks of the stored documents and delegates each `CircuitSteps` to `quantum_sim.qasm.to_qasm`, which reads it with `from_gate_list` before writing a line. The result is one deterministic program per side of a drawn equality, with provenance, the wire convention and the drawn sign, under `<output_dir>/qasm/`. A circuit the simulator refuses is refused, never marked `"ok"`; open controls are conjugated with `x`; a free parameter is bound with `--set` (the name is one symbol, such as `theta` or `\theta_{1}`; a typo such as `thetta`, or `pi`, is a usage error; the value is a number or an angle such as `pi/4` or `\pi/4`, read by the rule `quantum-sim run` uses too) or the circuit is refused; a refusal in one circuit, or a file that cannot be written for one paper, does not stop the others. `ingest --qasm` and `crawl --qasm` run the same export, best effort and without `--set`, after storing ([ADR 0006](docs/adr/0006-openqasm-3-export.md)).
 - **Math pages to OCR (opt-in).** `[routing] math_to_ocr = true` sends a text-layer page full of formulas to the vision model, which keeps their structure better than the layer does. Off by default, at about 31 seconds per routed page ([math pages](#per-page-pdf-routing)).
 - **Content-addressed cache.** Outputs are keyed by the input's sha256 and by the fingerprints of the adapters that produce that kind of input. Partial and forced-OCR runs are stored as variants and never replace a complete result ([caching](#caching-and-invalidation)).
 - **PaperQA2 integration.** A corpus mode (`docingest ask`) with page-aware chunks, an index mode that retrieves from a persistent chunk index and reranks before PaperQA2 answers, and a native `parse_pdf` hook for PaperQA2's own `Docs.aadd` ([PaperQA2](#paperqa2-integration)).
@@ -631,10 +631,10 @@ docingest is organised in layers, from the pure domain at the center to the entr
 
 ```mermaid
 flowchart TD
-    EP["entrypoints: cli.py, bench_cli.py, ask_lines.py, paperqa_hook.py"] --> BS["bootstrap: REGISTRY, entry-point plugins, Container"]
-    BS --> AD["adapters: one subpackage per port"]
+    EP["entrypoints: cli.py, bench_cli.py, circuits_cli.py, ask_lines.py, paperqa_hook.py"] --> BS["bootstrap: REGISTRY, entry-point plugins, Container"]
+    BS --> AD["adapters: one subpackage per port, and the qasm module"]
     AD --> CF["config: AppConfig loaded from pipeline.toml"]
-    CF --> AP["application: IngestService, CrawlService, AskService, BenchmarkRunner"]
+    CF --> AP["application: IngestService, CrawlService, AskService, QasmExportService, BenchmarkRunner"]
     AP --> PO["ports: typing.Protocol interfaces"]
     PO --> DO["domain: models, routing policy, text functions, chunker, errors"]
 ```
@@ -643,11 +643,11 @@ flowchart TD
 |---|---|---|---|
 | Domain | `docingest.domain` | `DocumentManifest`, `PageRecord`, `SourceMetadata`, `RoutingPolicy` and `decide`, text cleanup and Markdown (de)serialization, page-aware chunking, errors. Standard library and pydantic only. | [domain](src/docingest/domain/README.md) |
 | Ports | `docingest.ports` | `typing.Protocol` interfaces, all `@runtime_checkable`, plus their data classes. Adapters satisfy them by shape, without subclassing. | [ports](src/docingest/ports/README.md) |
-| Application | `docingest.application` | Use cases (`ingest`, `crawl`, `ask`, `benchmark`), OCR metrics and statistics. Depends on the domain and the ports, never on adapters or on I/O and model libraries (numpy is used for the statistics). | [application](src/docingest/application/README.md) |
+| Application | `docingest.application` | Use cases (`ingest`, `crawl`, `ask`, the QASM export `qasm`, `benchmark`), OCR metrics and statistics. Depends on the domain and the ports, never on adapters or on I/O and model libraries (numpy is used for the statistics). | [application](src/docingest/application/README.md) |
 | Config | `docingest.config` | pydantic settings for every section of `pipeline.toml`. | [package](src/docingest/README.md) |
-| Adapters | `docingest.adapters.*` | One subpackage per port; adapters do not import each other (the shared Hugging Face resolver excepted). | [adapters](src/docingest/adapters/README.md) |
+| Adapters | `docingest.adapters.*` | One subpackage per port, and the `qasm` module (the circuit exporter); adapters do not import each other (the shared Hugging Face resolver excepted). | [adapters](src/docingest/adapters/README.md) |
 | Composition root | `docingest.bootstrap` | Maps `[adapters]` names to factories, discovers plugins, builds the `Container`. | [package](src/docingest/README.md) |
-| Entrypoints | `docingest.entrypoints` | The typer CLI, the benchmark CLI and the PaperQA2 hook. | [entrypoints](src/docingest/entrypoints/README.md) |
+| Entrypoints | `docingest.entrypoints` | The typer CLI (with `docingest circuits` in `circuits_cli.py`), the benchmark CLI and the PaperQA2 hook. | [entrypoints](src/docingest/entrypoints/README.md) |
 
 Ports and their built-in adapters:
 
@@ -665,6 +665,7 @@ Ports and their built-in adapters:
 | `qa` | `QuestionAnswerer` | `paperqa`: `PaperQAAnswerer` | `adapters/qa/paperqa.py` |
 | `embedder`, `index`, `reranker` | `Embedder`, `ChunkIndex`, `Reranker` | `none`: `NoEmbedder`, `NoIndex`, `NoReranker` (the defaults; real ones come from plugins) | `adapters/retrieval/none.py` |
 | set in `config/benchmark.toml` | `BenchmarkSuite` | `synthetic`: `SyntheticSuite`; `olmocr-bench`: `OlmOcrBenchSuite` | `adapters/datasets/` |
+| none (override `exporter`) | `CircuitExporter` | `QuantumSimExporter` | `adapters/qasm.py` |
 
 The layering is enforced by eight import-linter contracts that run in CI (`uv run lint-imports`): inward-only layers, independent adapter subpackages, a pure domain, an application layer free of concrete libraries, no import of a plugin package, adapters imported only by `bootstrap` and `entrypoints`, no import of the separate `research_api` or `qa_bench` packages, and a one-way import of `quantum_sim` only in the QASM export adapter (the domain and the application depend on the `CircuitExporter` port). Adapter modules are imported lazily inside their factories, so heavy optional dependencies (mlx-vlm, Docling, PaperQA2, and quantum-sim for QASM) load only when that adapter is selected and used.
 
@@ -714,7 +715,7 @@ def factory(cfg):  # (AppConfig) -> adapter
 echo-ocr = "my_pkg.ocr:factory"
 ```
 
-After installing the plugin, `ocr = "echo-ocr"` in `[adapters]` selects it, and `uv run docingest adapters` lists it. A built-in adapter wins a name clash. Behavioural tests shared by the fake and real implementations of a port live in `tests/contract/` (today for the OCR engine, the store, the embedder, the chunk index and the reranker); see [tests/README.md](tests/README.md).
+After installing the plugin, `ocr = "echo-ocr"` in `[adapters]` selects it, and `uv run docingest adapters` lists it. A built-in adapter wins a name clash. Behavioural tests shared by the fake and real implementations of a port live in `tests/contract/` (today for the OCR engine, the store, the embedder, the chunk index, the reranker and the circuit exporter); see [tests/README.md](tests/README.md).
 
 ## OCR models and benchmark
 
@@ -843,7 +844,7 @@ Each directory with its own README is linked.
   - [`domain/`](src/docingest/domain/README.md): pure models, routing policy, text functions, chunker, errors.
   - [`ports/`](src/docingest/ports/README.md): Protocol interfaces.
   - [`application/`](src/docingest/application/README.md): use cases, metrics, statistics.
-  - [`adapters/`](src/docingest/adapters/README.md): implementations, one subpackage per port.
+  - [`adapters/`](src/docingest/adapters/README.md): implementations, one subpackage per port, and the `qasm` module.
     - [`ocr/`](src/docingest/adapters/ocr/README.md): mlx-vlm and OpenAI-compatible OCR, model profiles.
     - [`converters/`](src/docingest/adapters/converters/README.md): pandoc LaTeX, Docling, passthrough.
     - `detection/`, `pdf/`, `images/`, `store/`, `sources/`, `qa/`, `datasets/`, `models/`: described in the adapters README.

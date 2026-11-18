@@ -73,9 +73,9 @@ The diagram shows the imports that actually exist in the code. An arrow means "i
 
 ```mermaid
 flowchart TD
-    EP["entrypoints: cli, bench_cli, paperqa_hook"]
+    EP["entrypoints: cli, bench_cli, circuits_cli, paperqa_hook"]
     BOOT["bootstrap: REGISTRY, Container"]
-    AD["adapters: one subpackage per port"]
+    AD["adapters: one subpackage per port, and the qasm module"]
     CFG["config: AppConfig, load_config"]
     APP["application: use cases"]
     PORTS["ports: Protocols"]

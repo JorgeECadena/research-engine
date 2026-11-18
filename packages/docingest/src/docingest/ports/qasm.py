@@ -36,7 +36,8 @@ class QasmExport:
     (all of them when the circuit could not be read). ``None`` means the exporter did not report
     it; the service then counts every key as unmatched for this circuit, so a binding is never
     taken as used because nobody checked. ``unbound`` names the symbols of a refused circuit
-    that the caller gave no value; it is empty for an ok export.
+    that the caller gave no value, and only when values for them alone would export the circuit
+    (a circuit refused for another reason too has none); it is empty for an ok export.
     """
 
     status: str

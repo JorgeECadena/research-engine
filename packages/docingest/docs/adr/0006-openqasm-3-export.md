@@ -123,11 +123,14 @@ symbol is refused unless the caller binds it with `values` / `--set`; nothing is
 rounded decimal. Every number is written as a float literal, because OpenQASM's `/` on two
 integers is integer division and an int-to-angle cast is not allowed:
 `R_z(\frac{1}{2}\pi)` becomes `rz((1.0/2.0)*pi)`, `R_y(5.)` becomes `ry(5.0)`, and
-`2^3` becomes `2.0**3.0`. A binding may be written as `pi/4` or `\pi/4`. Its name is one symbol
-of the angle grammar, by `quantum_sim.angles.symbol_name`, the one rule that the export, `run`
-and `check` share (`theta`, `\theta` and `{\theta}` are `theta`, `\theta_{1}` is `theta_1`). A
-name that is not one symbol (`thetta`, `pi`, `e`, `the{ta}`, `\\theta`, a name with a line break)
-is a usage error, as are a name bound twice in two spellings, `True`, a value with a free symbol
+`2^3` becomes `2.0**3.0`. A binding value may be written as `pi/4` or `\pi/4`: a text value is
+read by `quantum_sim.angles.parse_value` (the angle grammar, after a `pi` that stands alone
+becomes `\pi`), the one value rule that the export, `run`, `check` and both `--set` options
+share, so the research API's `/circuits/run` and `/check` take the same values. Its name is one
+symbol of the angle grammar, by `quantum_sim.angles.symbol_name`, the one name rule that they
+share too (`theta`, `\theta` and `{\theta}` are `theta`, `\theta_{1}` is `theta_1`). A
+name that is not one symbol (`thetta`, `pi`, `e`, `the{ta}`, `\\theta`, a name with a line break
+inside it; white space around a name is ignored) is a usage error, as are a name bound twice in two spellings, `True`, a value with a free symbol
 and an integer too large for a float. A name that is one symbol but that no exported circuit
 uses is a warning. A binding written as text follows the angle grammar, so it takes no
 exponent notation: write `10000000000`, not `1e10`. Each bound angle is evaluated as the
@@ -167,12 +170,24 @@ evaluate.
   hook passes no `--set` values, so a circuit with a free symbol is refused there, and its
   programs from an earlier `docingest circuits export --set ...` are removed as stale; the
   warning names the circuit and the symbol, and the same `circuits export --set` writes them
-  again.
+  again. The hint is given only when a missing value is what refuses the circuit: the adapter
+  exports it a second time with a placeholder value for each symbol without a value, and
+  reports the symbols (`QasmExport.unbound`) only if that export is ok. Each symbol gets its own
+  placeholder (0.37 plus a tenth of the square root of a prime, in sorted symbol order), so
+  `\frac{1}{\theta - \phi}` with neither bound still gets the hint. A circuit refused for
+  another reason too (a `|1>` input, an `iSWAP` or `R_{zz}`, a value of the caller's that the
+  angle cannot take) has no hint; a circuit singular at the placeholders (`\sqrt{\theta - 1}`,
+  as they are below 1) loses the hint, never gains a false one.
 - A file that cannot be written stops the export of that document only. The error is reported
   per document (`QasmExportReport.errors`), the document's earlier programs are kept (its cleanup
-  is skipped), the other documents are exported, and `docingest circuits export` exits 1. An
-  error in the cleanup is reported with the number of files it removed; an output folder that
-  cannot be made is one error for the run.
+  is skipped), the other documents are exported, and `docingest circuits export` exits 1, also
+  with `--allow-partial`. An error in the cleanup is reported with the number of files it
+  removed; an output folder that cannot be made is one error for the run, and the run stops.
+  `QasmExportReport.documents` counts the documents the run reached (one whose Markdown could not
+  be read counts; those after the folder error do not), and a run with an error gives no
+  "matches no symbol" warning, because a document it did not finish may use the key. A paper
+  whose Markdown could not be read is a warning, not an error: the "matches no symbol" warning
+  is still given (it speaks of the exported circuits), next to the "cannot read" warning.
 
 ## Alternatives considered
 

@@ -6,7 +6,7 @@ are numbered from 1, and results are compared up to global phase. See ``docs/con
 
 from importlib.metadata import version
 
-from quantum_sim.angles import Angle, parse_angle, symbol_name
+from quantum_sim.angles import Angle, parse_angle, parse_value, symbol_name
 from quantum_sim.api import RESULT_FORMAT, check, refusal, run
 from quantum_sim.domain import (
     ATOL,
@@ -86,6 +86,7 @@ __all__ = [
     "from_gate_list",
     "label_of",
     "parse_angle",
+    "parse_value",
     "probabilities",
     "refusal",
     "resolve_label",

@@ -285,6 +285,33 @@ def test_the_hook_names_only_the_circuits_whose_programs_it_removed(tmp_path):
     )
 
 
+THETA_AFTER_ONE = quantikz("\\lstick{\\ket{1}} & \\gate{R_y(\\theta)} & \\qw")
+THETA_AND_RZZ = quantikz(
+    "& \\gate{R_y(\\theta)} & \\gate[2]{R_{zz}(0.5)} & \\qw", "& \\qw & & \\qw"
+)
+THETA_AND_ISWAP = quantikz("& \\gate{R_y(\\theta)} & \\gate[2]{iSWAP} & \\qw", "& \\qw & & \\qw")
+
+
+@pytest.mark.parametrize("changed", [THETA_AFTER_ONE, THETA_AND_RZZ, THETA_AND_ISWAP])
+def test_the_hook_does_not_blame_a_missing_value_for_another_refusal(tmp_path, changed):
+    # the paper is ingested again (--force) and its circuit now has a |1> input, an R_zz or an
+    # iSWAP: a value for theta would not export it, so the note must not say it would
+    store = InMemoryStore()
+    document(store, "a" * 64, THETA)
+    out = tmp_path / "qasm"
+    service = QasmExportService(store, out, QuantumSimExporter())
+    assert service.export_corpus(values={"theta": "pi/4"}).written == 1
+    document(store, "a" * 64, changed)
+
+    report = service.export_documents(store.corpus()[0])  # the --qasm hook passes no values
+
+    assert not (out / "aaaaaaaaaaaaaaaa-b01-c01-p01.qasm").exists() and report.removed == 1
+    [note] = [warning for warning in report.warnings if "stale" in warning]
+    assert note == "a.md: removed 1 stale QASM file(s) from an earlier export"
+    assert not any("has no value" in line for line in (*report.warnings, *report.refusals))
+    assert service.export_corpus(values={"theta": "pi/4"}).written == 0
+
+
 def test_a_reexport_removes_a_part_that_the_document_lost(tmp_path):
     store = InMemoryStore()
     document(store, "a" * 64, H)
@@ -361,37 +388,43 @@ def test_a_failed_write_leaves_neither_a_partial_file_nor_a_temporary_file(tmp_p
 
 
 def test_a_write_error_stops_one_document_and_the_next_is_still_exported(tmp_path, monkeypatch):
+    # the error hits the first document, so the documents after it show that the run goes on
     store = InMemoryStore()
     document(store, "a" * 64, H, H, name="a.md")
     document(store, "b" * 64, H, H, name="b.md")
+    document(store, "c" * 64, H, H, name="c.md")
     out = tmp_path / "qasm"
     out.mkdir()
-    for doc in ("a", "b"):  # a stale program of each document from an earlier export
+    for doc in ("a", "b", "c"):  # a stale program of each document from an earlier export
         (out / f"{doc * 16}-b09-c01-p01.qasm").write_text("stale")
     replace = qasm_module.os.replace
 
-    def full_for_b(source, destination):
-        if Path(destination).name.startswith("b" * 16 + "-b02"):
+    def full_for_a(source, destination):
+        if Path(destination).name.startswith("a" * 16 + "-b02"):
             raise OSError("disk full")
         return replace(source, destination)
 
-    monkeypatch.setattr("docingest.application.qasm.os.replace", full_for_b)
+    monkeypatch.setattr("docingest.application.qasm.os.replace", full_for_a)
     report = export(store, out)
 
     assert [file.path.name for file in report.files] == [
-        "aaaaaaaaaaaaaaaa-b01-c01-p01.qasm",
-        "aaaaaaaaaaaaaaaa-b02-c01-p01.qasm",
-        "bbbbbbbbbbbbbbbb-b01-c01-p01.qasm",  # written before the error, and kept
+        "aaaaaaaaaaaaaaaa-b01-c01-p01.qasm",  # written before the error, and kept
+        "bbbbbbbbbbbbbbbb-b01-c01-p01.qasm",
+        "bbbbbbbbbbbbbbbb-b02-c01-p01.qasm",
+        "cccccccccccccccc-b01-c01-p01.qasm",
+        "cccccccccccccccc-b02-c01-p01.qasm",
     ]
     assert report.errors == (
-        "b.md: cannot finish the export: disk full; its earlier programs were kept",
+        "a.md: cannot finish the export: disk full; its earlier programs were kept",
     )
-    assert not report.ok and report.removed == 1
+    assert not report.ok and report.removed == 2 and report.documents == 3
     assert names(out) == {
         "aaaaaaaaaaaaaaaa-b01-c01-p01.qasm",
-        "aaaaaaaaaaaaaaaa-b02-c01-p01.qasm",
+        "aaaaaaaaaaaaaaaa-b09-c01-p01.qasm",  # a's cleanup did not run
         "bbbbbbbbbbbbbbbb-b01-c01-p01.qasm",
-        "bbbbbbbbbbbbbbbb-b09-c01-p01.qasm",  # b's cleanup did not run
+        "bbbbbbbbbbbbbbbb-b02-c01-p01.qasm",
+        "cccccccccccccccc-b01-c01-p01.qasm",
+        "cccccccccccccccc-b02-c01-p01.qasm",
     }
 
 
@@ -449,6 +482,7 @@ def test_the_cleanup_spares_other_documents_other_files_and_an_unreadable_docume
 
     report = export(store, out, ["a.md"])
 
+    assert report.errors == () and report.ok
     assert report.removed == 1
     assert names(out) == keep | {
         "aaaaaaaaaaaaaaaa-b01-c01-p01.qasm",
@@ -531,6 +565,63 @@ def test_an_output_folder_that_cannot_be_made_is_one_error(tmp_path):
     [error] = report.errors
     assert error.startswith(f"cannot finish the export: the output folder {out} cannot be used")
     assert error.endswith("; the export stopped")
+
+
+def test_a_run_stopped_by_the_output_folder_reports_only_what_it_reached(tmp_path):
+    # b, the only document with theta, comes after the folder error: the run cannot know
+    # whether theta matches a symbol, and it did not reach b
+    store = InMemoryStore()
+    document(store, "a" * 64, H, name="a.md")
+    document(store, "b" * 64, THETA, name="b.md")
+    out = tmp_path / "file"
+    out.write_text("not a folder")
+
+    report = export(store, out, values={"theta": "pi/4"})
+
+    [error] = report.errors
+    assert error.startswith(f"cannot finish the export: the output folder {out} cannot be used")
+    assert not any("matches no symbol" in warning for warning in report.warnings)
+    assert (report.documents, report.circuits, report.written) == (1, 1, 0)
+
+
+def test_an_unreadable_document_counts_as_reached(tmp_path):
+    store = InMemoryStore()
+    document(store, "a" * 64, H, name="a.md")
+    document(store, "b" * 64, H, name="b.md")
+    original = store.markdown
+
+    def unreadable(doc):
+        if doc.manifest.doc_id == "a" * 64:
+            raise OSError("gone")
+        return original(doc)
+
+    store.markdown = unreadable
+    report = export(store, tmp_path / "qasm", values={"\\phi": "1"})
+
+    assert (report.documents, report.circuits, report.written) == (2, 1, 1)
+    assert report.errors == ()
+    assert "binding '\\\\phi' matches no symbol of any exported circuit" in report.warnings
+
+
+def test_a_document_error_suppresses_the_matches_no_symbol_warning(tmp_path, monkeypatch):
+    store = InMemoryStore()
+    document(store, "a" * 64, H, name="a.md")
+    document(store, "b" * 64, THETA, name="b.md")
+    replace = qasm_module.os.replace
+
+    def full_for_b(source, destination):
+        if Path(destination).name.startswith("b" * 16):
+            raise OSError("disk full")
+        return replace(source, destination)
+
+    monkeypatch.setattr("docingest.application.qasm.os.replace", full_for_b)
+    report = export(store, tmp_path / "qasm", values={"theta": "pi/4", "\\phi": "1"})
+
+    assert report.errors == (
+        "b.md: cannot finish the export: disk full; its earlier programs were kept",
+    )
+    assert report.documents == 2 and report.written == 1
+    assert not any("matches no symbol" in warning for warning in report.warnings)
 
 
 def test_programs_get_the_permissions_of_a_normal_write(tmp_path, monkeypatch):

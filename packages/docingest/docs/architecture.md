@@ -50,7 +50,7 @@ The architecture follows from four goals:
 | Port | A `typing.Protocol` in `docingest.ports` that the application depends on, for example `OcrEngine`. |
 | Adapter | A concrete class that has the shape of a port, for example `MlxVlmOcr`. Adapters never subclass or import the Protocol classes. |
 | Composition root | `docingest.bootstrap`: the only module that maps configuration names to adapters and wires them into use cases. |
-| Use case | An application service: `IngestService`, `CrawlService`, `AskService`, `BenchmarkRunner`. |
+| Use case | An application service: `IngestService`, `CrawlService`, `AskService`, `QasmExportService`, `BenchmarkRunner`. |
 | Page, segment | The unit of a document in the manifest. For PDFs it is a page, for images a frame, for LaTeX a section, for office and text files the whole document. The code calls all of them pages (`PageRecord`). |
 | `doc_id` | The SHA-256 of the input file's raw bytes. |
 | Fingerprint | A string on an adapter that names its version and every setting that can change its output. |
@@ -118,9 +118,9 @@ flowchart LR
 
 | Layer | Package | May import inside docingest | Contains |
 |---|---|---|---|
-| Entrypoints | `docingest.entrypoints` | every layer below | `cli.py` (the `docingest` typer app), `bench_cli.py` (`docingest bench`, which is also the benchmark's composition root), `ask_lines.py` (the JSON lines of `docingest ask --stdin`), `paperqa_hook.py` (a PaperQA2 `parse_pdf` replacement) |
+| Entrypoints | `docingest.entrypoints` | every layer below | `cli.py` (the `docingest` typer app), `bench_cli.py` (`docingest bench`, which is also the benchmark's composition root), `circuits_cli.py` (`docingest circuits export`), `ask_lines.py` (the JSON lines of `docingest ask --stdin`), `paperqa_hook.py` (a PaperQA2 `parse_pdf` replacement) |
 | Composition root | `docingest.bootstrap` | adapters, config, application, ports, domain | `REGISTRY`, `plugins`, `available`, `factory`, `build`, `Container` |
-| Adapters | `docingest.adapters.*` | config, application, ports, domain | one subpackage per technology area, plus the shared Hugging Face resolver in `adapters.models` |
+| Adapters | `docingest.adapters.*` | config, application, ports, domain | one subpackage per technology area, the `adapters.qasm` module (the QASM exporter, the only importer of `quantum_sim`), plus the shared Hugging Face resolver in `adapters.models` |
 | Config | `docingest.config` | application, ports, domain (in practice only `domain.routing`) | `AppConfig` and its sections, `load_config` |
 | Application | `docingest.application` | ports, domain | use cases, the benchmark runner and report, `metrics`, `stats` |
 | Ports | `docingest.ports` | domain | `@runtime_checkable` Protocols and frozen dataclasses such as `OcrResult`, `Conversion`, `StoredDocument` |
@@ -228,6 +228,7 @@ flowchart LR
 | `ChunkIndex` | `ports/index.py` | `index` | `none` | `NoIndex`, `adapters/retrieval/none.py` | `IndexService` |
 | `Reranker` | `ports/reranking.py` | `reranker` | `none` | `NoReranker`, `adapters/retrieval/none.py` | no use case yet |
 | `BenchmarkSuite` | `ports/benchmark.py` | none | `synthetic`, `olmocr-bench` | `SyntheticSuite`, `OlmOcrBenchSuite`, `adapters/datasets/` | `BenchmarkRunner`, `score_run` |
+| `CircuitExporter` | `ports/qasm.py` | none (override `exporter`) | none | `QuantumSimExporter`, `adapters/qasm.py` | `QasmExportService` |
 
 Some adapter modules are shared helpers rather than port implementations: `adapters/models/huggingface.py` (`resolve(repo_id, revision)`, an offline-first snapshot resolver), `adapters/ocr/profiles.py` (per-model prompt, image size, clean-up and retry ladder, shared by both OCR adapters), `adapters/converters/latex_source.py` (safe unpacking, main-file detection, `\input` flattening and the source rewrites pandoc needs, for LaTeX) and `adapters/sources/http.py` (`PoliteClient`, the rate-limited HTTP client of the arXiv crawler). See [adapters/README.md](../src/docingest/adapters/README.md), [adapters/ocr/README.md](../src/docingest/adapters/ocr/README.md) and [adapters/converters/README.md](../src/docingest/adapters/converters/README.md).
 

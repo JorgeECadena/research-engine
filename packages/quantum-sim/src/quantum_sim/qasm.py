@@ -26,9 +26,12 @@ The rules are the rules of the reader plus five format rules:
 A binding name is one symbol of the angle grammar, by :func:`quantum_sim.angles.symbol_name`, the
 rule the simulator's ``run`` and ``check`` use too: ``\\theta``, ``{\\theta}`` and ``theta`` are
 ``theta``, and ``\\theta_{1}`` is ``theta_1``. A key that is not one symbol (``thetta``, ``pi``,
-``the{ta}``, a key with a line break) is refused as a usage error; a symbol the document does
-not use is reported in ``unmatched``. The header writes a ``// bound:`` line only for a symbol of
-that part, under the reader's name, so a caller's text never reaches the header as a name.
+``the{ta}``, a name with a line break inside it; white space around a name is ignored) is
+refused as a usage error; a symbol the document does not use is reported in ``unmatched``. A
+value given as text is read by :func:`quantum_sim.angles.parse_value`, the simulator's rule too
+(``pi/4`` and ``\\pi/4`` are the same value). The header writes a ``// bound:`` line only for a
+symbol of that part, under the reader's name, so a caller's text never reaches the header as a
+name.
 
 The standard library has no ``sxdg``; it is spelled ``inv @ sx``, which is exact. Gates the
 simulator knows but ``stdgates.inc`` does not define (``rxx``, ``ryy``, ``rzz``, ``rk``,
@@ -37,12 +40,11 @@ simulator knows but ``stdgates.inc`` does not define (``rxx``, ``ryy``, ``rzz``,
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from quantum_sim.angles import Angle, binding_name, format_number, parse_angle, symbol_name
+from quantum_sim.angles import Angle, binding_name, format_number, parse_value, symbol_name
 from quantum_sim.domain import MEASURE, AngleError, RefusedError
 from quantum_sim.formats import ParametricCircuit, ParametricOp, Reading, from_gate_list
 
@@ -55,9 +57,6 @@ __all__ = [
 ]
 
 QASM_FORMAT_VERSION = 1
-
-# A caller may write ``pi/4`` as a binding value; the angle grammar spells the constant ``\pi``.
-_PI = re.compile(r"(?<![\\A-Za-z])pi(?![A-Za-z])")
 
 # Gates whose name is defined by the OpenQASM 3 standard library. ``sxdg`` is not here: it is
 # written as ``inv @ sx`` below. The check in the tests keeps this table honest.
@@ -330,7 +329,7 @@ def _bindings(values: Mapping[str, str | float | int] | None) -> dict[str, Angle
             angle = (
                 Angle.of(_float(value))
                 if isinstance(value, int | float)
-                else parse_angle(_PI.sub(r"\\pi", str(value)))
+                else parse_value(str(value))
             )
         except AngleError as error:
             raise _Bad(f"value for {name!r}: {error}") from None

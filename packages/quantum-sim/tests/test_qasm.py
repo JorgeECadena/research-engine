@@ -214,6 +214,18 @@ def test_the_export_and_the_simulator_take_the_same_binding_names(key: str) -> N
     assert result["values"] == {"theta": 0.5}
 
 
+@pytest.mark.parametrize("value", ["pi/4", "\\pi/4", "\\frac{pi}{4}", "pie/4", "2 pie"])
+def test_the_export_and_the_simulator_read_a_value_by_the_same_rule(value: str) -> None:
+    document = circuit((step(op(label="R_y(\\theta)")),))
+    export = to_qasm(document, values={"theta": value})
+    result = run(document, values={"theta": value})
+    assert (export.status == "ok") is (result["status"] == "ok"), (export.reasons, result)
+    assert export.ok is ("pie" not in value)
+    if export.ok:
+        assert body(export) == ["ry(pi/4.0) q[0];"]
+        assert result["values"] == {"theta": 0.7853981633974483}
+
+
 def test_the_export_and_the_simulator_refuse_the_same_binding_name() -> None:
     document = circuit((step(op(label="R_y(\\theta)")),))
     export = to_qasm(document, values={"the{ta}": "0.5"})

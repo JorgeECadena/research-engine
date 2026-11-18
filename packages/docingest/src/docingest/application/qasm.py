@@ -23,7 +23,9 @@ A filesystem error while writing one document stops that document only: it is re
 ``QasmExportReport.errors``, the programs it already wrote stay in ``files``, its cleanup is
 skipped (its earlier programs are kept), and the next document is exported. An error in the
 cleanup is reported with the number of files it had removed. An output folder that cannot be
-made stops the run with one error.
+made stops the run with one error. ``documents`` in the report counts the documents the run
+reached, and a run with an error gives no "matches no symbol" warning for a ``--set`` key (a
+document whose Markdown cannot be read is a warning, not an error, and does not hold it back).
 """
 
 from __future__ import annotations
@@ -67,8 +69,13 @@ class QasmFile:
 class QasmExportReport:
     """What one export wrote, removed, refused and warned about.
 
-    ``errors`` names each document whose export stopped on a filesystem error; the other
-    documents were still exported.
+    ``documents`` counts the documents the run reached: a document whose Markdown could not be
+    read counts, and so does one whose export stopped on an error, but the documents after an
+    output folder error (which stops the run) do not. ``errors`` names each document whose
+    export stopped on a filesystem error; the other documents were still exported. A run with
+    errors gives no "matches no symbol" warning, because a document it could not finish may use
+    the key. A document whose Markdown could not be read is a warning, not an error: the "matches
+    no symbol" warning (which speaks of the exported circuits) is still given next to it.
     """
 
     out: Path
@@ -163,7 +170,9 @@ class QasmExportService:
         target = Path(out or self.out)
         tally = _Tally(keys=set(values or {}), notes=list(warnings))
         earlier = _programs(target)  # the folder is listed once per run
+        reached = 0  # the documents this run got to, whether or not their Markdown could be read
         for document in documents:
+            reached += 1
             name = document.manifest.source_name
             try:
                 markdown = self.store.markdown(document)
@@ -183,11 +192,12 @@ class QasmExportService:
                 tally.errors.append(
                     f"{name}: cannot finish the export: {e}; its earlier programs were kept"
                 )
-        for key in sorted(tally.keys):
-            tally.notes.append(f"binding {key!r} matches no symbol of any exported circuit")
+        if not tally.errors:  # a stopped document may have used the key: no claim either way
+            for key in sorted(tally.keys):
+                tally.notes.append(f"binding {key!r} matches no symbol of any exported circuit")
         return QasmExportReport(
             out=target,
-            documents=len(documents),
+            documents=reached,
             circuits=tally.circuits,
             files=tuple(tally.files),
             refusals=tuple(tally.refusals),

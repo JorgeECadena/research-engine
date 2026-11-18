@@ -52,7 +52,7 @@ def _bindings(items: Sequence[str] | None) -> dict[str, str]:
             raise typer.BadParameter("--set expects NAME=VALUE")
         if name in values:
             raise typer.BadParameter(f"--set names {name!r} twice")
-        values[name] = value.strip()
+        values[name] = value  # parse_value strips it, and its error positions count from here
     return values
 
 
@@ -98,7 +98,7 @@ def export(
         typer.Option(
             "--set",
             help="Bind a free parameter: NAME=VALUE, NAME one symbol such as theta or "
-            "\\theta_{1} (repeatable)",
+            "\\theta_{1}, VALUE a number or an angle such as pi/4 or \\pi/4 (repeatable)",
         ),
     ] = None,
     allow_partial: Annotated[
